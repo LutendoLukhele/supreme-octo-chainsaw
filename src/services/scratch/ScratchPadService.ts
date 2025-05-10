@@ -70,9 +70,13 @@ export class ScratchPadService extends EventEmitter {
         let summary = { count: 0 };
 
         if (config.provider === 'salesforce' && config.details.entityType) {
+          if (!CONFIG.CONNECTION_ID) {
+            logger.error(`Salesforce Connection ID (CONFIG.CONNECTION_ID) is not defined in environment variables. Skipping seeding for ${config.displayName}.`, { config, sessionId });
+            continue; // Skip this config item if the required connection ID is missing
+          }
           const response = await this.nangoService.triggerSalesforceAction(
             config.providerConfigKey,
-            CONFIG.CONNECTION_ID, // NangoService.triggerSalesforceAction uses its internal connectionId, but API requires a value here.
+            CONFIG.CONNECTION_ID, // Now guaranteed to be a string due to the check above
             'fetch',
             config.details.entityType,
             'all', // Identifier: 'all' to apply filters/limit broadly

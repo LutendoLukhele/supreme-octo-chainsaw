@@ -41,6 +41,15 @@ const logger = winston.createLogger({
     transports: [new winston.transports.Console()],
   });
 
+// --- Critical Config Validation ---
+if (!CONFIG.GROQ_API_KEY) {
+  logger.error("CRITICAL ERROR: GROQ_API_KEY is not defined in environment variables. Application cannot start.");
+  process.exit(1); // Exit if critical config is missing
+}
+if (!CONFIG.OPEN_AI_API_KEY) { // Good to check this one too if it's critical
+  logger.error("CRITICAL ERROR: OPEN_AI_API_KEY is not defined in environment variables. Application cannot start.");
+  process.exit(1);
+}
 // --- Service Initialization ---
 logger.info("Initializing services...");
 const nangoService = new NangoService();
@@ -52,7 +61,9 @@ const beatEngine      = new BeatEngine(toolConfigManager);
 logger.info("ScratchPadStore and BeatEngine initialized.");
 
 const conversationConfig: ConversationConfig = {
-    groqApiKey: CONFIG.GROQ_API_KEY, model: CONFIG.MODEL_NAME, maxTokens: CONFIG.MAX_TOKENS,
+    groqApiKey: CONFIG.GROQ_API_KEY, // Now guaranteed to be a string due to the check above
+    // openAIApiKey: CONFIG.OPEN_AI_API_KEY, // If ConversationConfig needs this, add it similarly
+    model: CONFIG.MODEL_NAME, maxTokens: CONFIG.MAX_TOKENS,
     nangoService: nangoService, client: undefined, tools: [], logger,
     TOOL_CONFIG_PATH: 'config/tool-config.json'
 };
