@@ -1,7 +1,7 @@
 # Stage 1: Build the application
 FROM node:18-alpine AS builder
 
-WORKDIR /usr/src/app
+WORKDIR /usr/backend-main/src/
 
 # Install cpx for copying assets if it's part of the build script
 # and not already a global or project dependency handled by npm install.
