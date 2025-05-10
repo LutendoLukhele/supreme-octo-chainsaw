@@ -1,5 +1,41 @@
 {
+  "name": "src",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node ../../index.ts",
+    "watch": "tsc -w"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+      "build:ts": "tsc -p .",
+    "build:copy-assets": "cpx \"src/prompts/**/*\" \"dist/prompts\"",
+    "build": "npm run build:ts && npm run build:copy-assets",
+    "start": "node dist/index.js",
+    "dev": "ts-node ../../index.ts",
+    "watch": "tsc -w",
+  
   "dependencies": {
-    "firebase": "^11.6.0"
+    "@lixpi/markdown-stream-parser": "^0.0.3-32",
+    "@nangohq/node": "^0.58.5",
+    "@redis/client": "^5.0.1",
+    "groq-sdk": "^0.19.0",
+    "openai": "^4.97.0",
+    "uuid": "^11.1.0",
+    "winston": "^3.17.0",
+    "ws": "^8.18.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "@types/ws": "^8.18.1",
+    "eslint": "^8.57.1",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   }
 }

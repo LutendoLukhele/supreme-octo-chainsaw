@@ -1,0 +1,27 @@
+{
+    "compilerOptions": {
+      "target": "ES2022",
+      "module": "CommonJS",
+      "outDir": "./dist",
+      "rootDir": "./",
+      "strict": true,
+      "moduleResolution": "node",
+      "esModuleInterop": true,
+      "skipLibCheck": true,
+      "forceConsistentCasingInFileNames": true,
+      "baseUrl": ".",
+      "paths": {
+        "@services/*": ["./services/*"],
+        "@types/*": ["./types/*"]
+      }
+    },
+    "include": [
+      "../**/*.ts",
+      "./**/*.tsx"
+    ],
+    "exclude": [
+      "node_modules",
+      "**/*.spec.ts",
+      "**/*.test.ts"
+    ]
+  }
