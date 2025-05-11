@@ -1,16 +1,17 @@
 // src/firebase.ts
 import { initializeApp } from 'firebase/app';
 import { getDatabase } from 'firebase/database';
+import { CONFIG } from './config'; // Import the centralized config
 
 const firebaseConfig = {
-    apiKey: "AIzaSyCWAXud14gWvvTKP5_oDRaNLIIrH5Z0hgo",
-    authDomain: "assistant-b00f5.firebaseapp.com",
-    databaseURL: "https://assistant-b00f5-default-rtdb.firebaseio.com",
-    projectId: "assistant-b00f5",
-    storageBucket: "assistant-b00f5.firebasestorage.app",
-    messagingSenderId: "876200943144",
-    appId: "1:876200943144:web:bca0933dd3bd71e9605f1d",
-    measurementId: "G-H108B15KW3"
+    apiKey: CONFIG.FIREBASE_API_KEY,
+    authDomain: CONFIG.FIREBASE_AUTH_DOMAIN,
+    databaseURL: CONFIG.FIREBASE_DATABASE_URL,
+    projectId: CONFIG.FIREBASE_PROJECT_ID,
+    storageBucket: CONFIG.FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: CONFIG.FIREBASE_MESSAGING_SENDER_ID,
+    appId: CONFIG.FIREBASE_APP_ID,
+    measurementId: CONFIG.FIREBASE_MEASUREMENT_ID
   };
 
 const app = initializeApp(firebaseConfig);
