@@ -522,7 +522,7 @@ async function handleToolCalls(
 
 // --- Health & Server Start ---
 // Use the PORT environment variable provided by Cloud Run, fallback to CONFIG.PORT or 3000 for local dev
-const PORT = process.env.PORT || CONFIG.PORT ;
+const PORT = 8080;
 server.listen(PORT, () => logger.info(`Server is running on port ${PORT}`));
 
 // --- Graceful Shutdown ---
