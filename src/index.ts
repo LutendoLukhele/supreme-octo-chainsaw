@@ -1,10 +1,15 @@
 // src/server.ts (Fully Updated with Action Launcher Logic)
 
 // --- Existing Imports ---
-import express, { response } from 'express';
+import express from 'express';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+
 
 import { createServer, IncomingMessage } from 'http';
-import WebSocket from 'ws';
+import { WebSocket, WebSocketServer } from 'ws'; // Changed ws import
 import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -30,9 +35,8 @@ import { UpdateParameterPayload, ExecuteActionPayload, InvalidToolCallInfo } fro
 // --- External SDKs ---
 import Groq from 'groq-sdk';
 import { recordFollowUpResponse, handleChatMessage, recordAiResponseAndToolCalls, updateToolCallResult } from './services/chat_hanndler';
-import { ScratchPadService } from './services/scratch/ScratchPadService';
+import { ScratchPadService } from './services/scratch/ScratchPadService'; // Removed duplicate import of request from 'https'
 import { UserSeedStatusStore } from './services/user-seed-status.store'
-import { request } from 'https';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -70,9 +74,6 @@ const conversationConfig: ConversationConfig = {
     TOOL_CONFIG_PATH: 'config/tool-config.json'
 };
 // Pass ToolConfigManager instance if ConversationService needs it, otherwise it creates its own
-
-const res = response
-const req =   request
 
 const userSeedStatusStore = new UserSeedStatusStore(CONFIG.REDIS_URL || "")
 
@@ -156,7 +157,7 @@ app.get('/api/sessions/:sessionId/scratchpad', async (req, res) => {
 
 
 // --- WebSocket Server ---
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 logger.info("WebSocket server started.");
 
 wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {

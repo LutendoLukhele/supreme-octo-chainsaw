@@ -6,9 +6,10 @@
     "build:ts": "tsc -p .",
     "build:copy-assets": "cpx \"src/prompts/**/*\" \"dist/prompts\"",
     "build": "npm run build:ts && npm run build:copy-assets",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "dev": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/index.ts",
-    "watch": "tsc -w"
+    "watch": "tsc -w",
+    "gcp-build": "npm run build"
   },
   "keywords": [],
   "author": "",
