@@ -1,7 +1,7 @@
 // src/services/tool/ToolConfigManager.ts
 import fs from 'fs';
 import path from 'path';
-import winston from 'winston'; // Import winston directly
+import winston from 'winston'; // Changed from namespace import to default import
 import { z } from 'zod';
 import { ToolConfig, ProviderConfig, EntityType } from './tool.types'; // Your existing types
 

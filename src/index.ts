@@ -28,9 +28,9 @@ import { UpdateParameterPayload, ExecuteActionPayload, InvalidToolCallInfo } fro
 
 // --- External SDKs ---
 import Groq from 'groq-sdk';
-import { recordFollowUpResponse, handleChatMessage, recordAiResponseAndToolCalls, updateToolCallResult } from './/services/chat_hanndler';
-import { ScratchPadService } from '../src/services/scratch/ScratchPadService';
-import { UserSeedStatusStore } from '../src/services/user-seed-status.store'
+import { recordFollowUpResponse, handleChatMessage, recordAiResponseAndToolCalls, updateToolCallResult } from './services/chat_hanndler';
+import { ScratchPadService } from './services/scratch/ScratchPadService';
+import { UserSeedStatusStore } from './services/user-seed-status.store'
 
 const logger = winston.createLogger({
     level: 'info',
@@ -522,7 +522,7 @@ async function handleToolCalls(
 
 // --- Health & Server Start ---
 // Use the PORT environment variable provided by Cloud Run, fallback to CONFIG.PORT or 3000 for local dev
-const PORT = process.env.PORT || CONFIG.PORT || 3000;
+const PORT = process.env.PORT || CONFIG.PORT ;
 server.listen(PORT, () => logger.info(`Server is running on port ${PORT}`));
 
 // --- Graceful Shutdown ---

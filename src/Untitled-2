@@ -1,4 +1,0 @@
-REDIS_URL="redis://localhost:6379"
-
-# Add other environment variables your app needs here, for example:
-# GROQ_API_KEY="your_groq_api_key"
