@@ -7,7 +7,7 @@ export interface StreamConfig extends ServiceConfig {
 
 
 
-export type StreamChunkType = 'error' | 'tool_result' | 'content' | 'tool_status' | 'tool_call' | 'parsed_markdown_segment';
+export type StreamChunkType = 'error' | 'tool_result' | 'content' | 'tool_status' | 'tool_call' | 'parsed_markdown_segment' | 'conversational_text_part' | 'markdown_artefact_part' | 'message_end';
 
 export interface StreamChunk {
   type: StreamChunkType;

@@ -1,7 +1,8 @@
 // src/server.ts (Fully Updated with Action Launcher Logic)
 
 // --- Existing Imports ---
-import express from 'express';
+import express, { response } from 'express';
+
 import { createServer, IncomingMessage } from 'http';
 import WebSocket from 'ws';
 import winston from 'winston';
@@ -31,6 +32,7 @@ import Groq from 'groq-sdk';
 import { recordFollowUpResponse, handleChatMessage, recordAiResponseAndToolCalls, updateToolCallResult } from './services/chat_hanndler';
 import { ScratchPadService } from './services/scratch/ScratchPadService';
 import { UserSeedStatusStore } from './services/user-seed-status.store'
+import { request } from 'https';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -69,6 +71,8 @@ const conversationConfig: ConversationConfig = {
 };
 // Pass ToolConfigManager instance if ConversationService needs it, otherwise it creates its own
 
+const res = response
+const req =   request
 
 const userSeedStatusStore = new UserSeedStatusStore(CONFIG.REDIS_URL || "")
 
