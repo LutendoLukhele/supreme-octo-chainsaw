@@ -47,7 +47,7 @@ const getEnvVar = (key: string, defaultValue?: string, isCritical: boolean = fal
 };
 
 export const CONFIG = {
-    PORT: getEnvVar('PORT'),
+  
     REDIS_URL: getEnvVar('REDIS_URL', 'redis://localhost:6379'),
     OPEN_AI_API_KEY: getEnvVar('OPEN_AI_API_KEY', undefined, true), // Mark as critical
     GROQ_API_KEY: getEnvVar('GROQ_API_KEY', undefined, true),       // Mark as critical

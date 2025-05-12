@@ -521,9 +521,18 @@ async function handleToolCalls(
 }
 
 // --- Health & Server Start ---
-// Use the PORT environment variable provided by Cloud Run, fallback to CONFIG.PORT or 3000 for local dev
-const PORT = 8080;
-server.listen(PORT, () => logger.info(`Server is running on port ${PORT}`));
+// Use the PORT environment variable. Cloud Run automatically sets this.
+// For local development, you can set it in your .env file or it will default to 8080.
+const portFromEnv = process.env.PORT || '8080'; // Default to 8080 if not set
+let appPort = parseInt(portFromEnv, 10);
+
+if (isNaN(appPort) || appPort <= 0 || appPort > 65535) {
+  logger.error(`[SERVER START] Invalid PORT configured: '${portFromEnv}'. Defaulting to 8080.`);
+  appPort = 8080;
+}
+
+logger.info(`[SERVER START] Attempting to start server on port: ${appPort}`);
+server.listen(appPort, () => logger.info(`[SERVER START] Server is running on port ${appPort}`));
 
 // --- Graceful Shutdown ---
 process.on('SIGTERM', () => {

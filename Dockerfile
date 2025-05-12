@@ -2,6 +2,8 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+EXPOSE 8080
+
 # Copy package.json and package-lock.json
 COPY package*.json ./
 

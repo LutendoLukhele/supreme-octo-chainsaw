@@ -1,23 +1,19 @@
 {
   "name": "src",
   "version": "1.0.0",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build:ts": "tsc -p .",
+    "build:copy-assets": "cpx \"src/prompts/**/*\" \"dist/prompts\"",
+    "build": "npm run build:ts && npm run build:copy-assets",
     "start": "node dist/index.js",
-    "dev": "ts-node ../../index.ts",
+    "dev": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/index.ts",
     "watch": "tsc -w"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
-  "build:ts": "tsc -p .",
-  "build:copy-assets": "cpx \"src/prompts/**/*\" \"dist/prompts\"",
-  "build": "npm run build:ts && npm run build:copy-assets",
-  "start": "node dist/index.js",
-  "dev": "ts-node ..ts/index.ts",
-  "watch": "tsc -w",
   "dependencies": {
     "@lixpi/markdown-stream-parser": "^0.0.3-32",
     "@nangohq/node": "^0.58.5",
@@ -25,7 +21,6 @@
     "dotenv": "^16.5.0",
     "env": "^0.0.2",
     "firebase": "^11.7.1",
-    "groq-sdk": "^0.19.0",
     "openai": "^4.97.0",
     "uuid": "^11.1.0",
     "winston": "^3.17.0",
@@ -33,6 +28,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "cpx": "^1.5.0", 
     "@types/node": "^22.14.1",
     "@types/ws": "^8.18.1",
     "eslint": "^8.57.1",
