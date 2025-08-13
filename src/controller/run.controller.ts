@@ -75,10 +75,7 @@ export class RunController {
             name: toolName,
             arguments: toolArgs,
             sessionId: sessionId,
-            // --- Fill in other required fields from your ToolCall interface ---
-            ToolName: '',
-            args: {},
-            result: {},
+            userId: ''
         };
 
         // 2. Create a new Run object in memory for this export action
@@ -86,7 +83,12 @@ export class RunController {
             sessionId: sessionId,
             userId: userId,
             userInput: `User initiated export: ${toolName}`,
-            toolExecutionPlan: [{ toolCall: exportToolCall, startedAt: new Date().toISOString() }],
+            toolExecutionPlan: [{
+                toolCall: exportToolCall, startedAt: new Date().toISOString(),
+                status: '',
+                error: undefined,
+                finishedAt: ''
+            }],
             connectionId: connectionId || parentRun.connectionId,
             contextMessages: parentRun.contextMessages,
         });
