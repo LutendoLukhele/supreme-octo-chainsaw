@@ -118,7 +118,7 @@
           "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
           "fields": {
             "type": "object",
-            "description": "Required: Key-value pairs of fields and values for the new record."
+  "description": "A key-value object of fields for the new record. The required fields depend on the 'entityType'.\n- For a 'Lead', you MUST include 'Company', 'LastName', and 'Status'. Example: { \"Company\": \"Innovate Corp\", \"LastName\": \"Doe\", \"Status\": \"Open - Not Contacted\" }\n- For a 'Contact', you MUST include 'LastName'. Example: { \"LastName\": \"Smith\", \"FirstName\": \"Jane\" }"
           }
         },
         "required": ["operation", "entityType", "fields"] 

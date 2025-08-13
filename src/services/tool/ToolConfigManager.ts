@@ -208,41 +208,67 @@ export class ToolConfigManager {
 
 
     public findConditionallyMissingParams(toolName: string, parsedArgs: Record<string, any>): string[] {
-        const missing: string[] = [];
-        if (!parsedArgs) return missing;
-    
-        if (toolName === 'fetch_entity') {
-            const { identifier, filters, operation } = parsedArgs;
-            if (operation === 'fetch') {
-                // Case 1: User explicitly wants to fetch "all"
-                const isFetchingAll = identifier && typeof identifier === 'string' && identifier.toLowerCase() === 'all';
-                // Case 2: User provides a specific identifier (that is not "all" and not empty)
-                const hasSpecificNonAllIdentifier = identifier && typeof identifier === 'string' && identifier.toLowerCase() !== 'all' && identifier.trim() !== '';
-                // Case 3: User provides filters
-                const hasFilters = filters && typeof filters === 'object' && Object.keys(filters).length > 0;
-    
-                // If none of the valid conditions are met (not fetching "all", no specific non-"all" ID, and no filters),
-                // then a parameter is considered missing.
-                if (!isFetchingAll && !hasSpecificNonAllIdentifier && !hasFilters) {
-                    logger.warn(`[ConditionalValidation] fetch_entity: To fetch data, provide a specific 'identifier' (e.g., an ID), 'filters', or set 'identifier' to "all" to fetch everything. Suggesting 'filters'.`, { parsedArgs });
-                    missing.push('filters'); // Suggesting 'filters' as a general way to specify criteria
-                }
-            }
+    const missing: string[] = [];
+    if (!parsedArgs) return missing;
+
+    // --- Validation for 'create_entity' with all entity cases ---
+    if (toolName === 'create_entity') {
+        const fields = parsedArgs.fields || {};
+        const entityType = parsedArgs.entityType;
+
+        switch (entityType) {
+            case 'Account':
+                if (!fields.Name) missing.push('fields.Name');
+                break;
+            case 'Contact':
+                if (!fields.LastName) missing.push('fields.LastName');
+                break;
+            case 'Deal':
+                if (!fields.Name) missing.push('fields.Name');
+                if (!fields.StageName) missing.push('fields.StageName');
+                if (!fields.CloseDate) missing.push('fields.CloseDate');
+                break;
+            case 'Article':
+                if (!fields.Title) missing.push('fields.Title');
+                if (!fields.UrlName) missing.push('fields.UrlName');
+                break;
+            case 'Case':
+                if (!fields.Subject) missing.push('fields.Subject');
+                if (!fields.Status) missing.push('fields.Status');
+                break;
+            case 'Lead':
+                if (!fields.Company) missing.push('fields.Company');
+                if (!fields.LastName) missing.push('fields.LastName');
+                break;
+            default:
+                // No specific conditional validation for this entity type in the script
+                break;
         }
-        // Add for update_entity too
-        if (toolName === 'update_entity') {
-            const { identifier, filters, operation } = parsedArgs; // fields is already in 'required'
-            if (operation === 'update') {
-                const hasIdentifier = identifier && typeof identifier === 'string' && identifier.trim() !== '';
-                const hasFilters = filters && typeof filters === 'object' && Object.keys(filters).length > 0;
-                if (!hasIdentifier && !hasFilters) {
-                    logger.warn(`[ConditionalValidation] update_entity is missing identifier or filters to specify record(s). Suggesting 'identifier'.`, { parsedArgs });
-                    missing.push('identifier'); // Or 'filters'
-                }
-            }
-        }
-        return missing;
     }
+
+    // --- Validation for 'update_entity' ---
+    if (toolName === 'update_entity') {
+        if (!parsedArgs.identifier) {
+            missing.push('identifier');
+        }
+        if (!parsedArgs.fields || Object.keys(parsedArgs.fields).length === 0) {
+            missing.push('fields (cannot be empty)');
+        }
+    }
+
+    // --- Validation for 'fetch_entity' ---
+    if (toolName === 'fetch_entity') {
+        const hasSpecificIdentifier = parsedArgs.identifier && parsedArgs.identifierType;
+        const hasFilters = parsedArgs.filters && Object.keys(parsedArgs.filters).length > 0;
+        const isFetchAll = typeof parsedArgs.identifier === 'string' && parsedArgs.identifier.toLowerCase() === 'all';
+
+        if (!hasSpecificIdentifier && !hasFilters && !isFetchAll) {
+            missing.push('A valid fetch criteria: (identifier + identifierType), a filters object, or an identifier of "all"');
+        }
+    }
+
+    return missing;
+}
 
     // Method to get tool definitions suitable for the planner prompt
     public getToolDefinitionsForPlanner(): ToolConfig[] {
