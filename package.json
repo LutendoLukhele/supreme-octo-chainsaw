@@ -1,13 +1,12 @@
 {
   "name": "src",
   "version": "1.0.0",
-  "main":   "dist/src/index.js",
-
+  "main": "dist/src/index.js",
   "scripts": {
     "build:ts": "tsc -p .",
     "build:copy-assets": "cpx \"src/prompts/**/*\" \"dist/prompts\"",
     "build": "npm run build:ts && npm run build:copy-assets",
-    "start": "node dist/src/index.js",
+  "start": "ts-node -r tsconfig-paths/register src/index.ts",
     "dev": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/index.ts",
     "watch": "tsc -w",
     "gcp-build": "npm run build"
@@ -24,8 +23,13 @@
     "env": "^0.0.2",
     "express": "^5.1.0",
     "firebase": "^11.7.1",
+    "firebase-admin": "^13.4.0",
     "groq-sdk": "^0.21.0",
+    "ioredis": "^5.6.1",
+    "lodash": "^4.17.21",
+    "node-persist": "^4.0.4",
     "openai": "^4.97.0",
+    "tsconfig-paths": "^4.2.0",
     "uuid": "^11.1.0",
     "winston": "^3.17.0",
     "ws": "^8.18.1",
@@ -33,7 +37,9 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
+    "@types/lodash": "^4.17.20",
     "@types/node": "^22.15.17",
+    "@types/node-persist": "^3.1.8",
     "@types/ws": "^8.18.1",
     "cpx": "^1.5.0",
     "eslint": "^8.57.1",

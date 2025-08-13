@@ -48,18 +48,21 @@ class ScratchPadService extends events_1.EventEmitter {
         this.userSeedStatusStore = userSeedStatusStore;
         logger.info('ScratchPadService initialized.');
     }
-    async seedInitialData(sessionId, seedConfigs) {
+    async seedInitialData(sessionId, seedConfigs, nangoConnectionId) {
         logger.info(`Starting initial data seeding for scratch pad. Session: ${sessionId}`, { count: seedConfigs.length });
         for (const config of seedConfigs) {
             try {
                 let records = [];
                 let summary = { count: 0 };
+                const connectionIdToUseForSeed = config.connectionId || nangoConnectionId;
                 if (config.provider === 'salesforce' && config.details.entityType) {
-                    if (!config_1.CONFIG.CONNECTION_ID) {
-                        logger.error(`Salesforce Connection ID (CONFIG.CONNECTION_ID) is not defined in environment variables. Skipping seeding for ${config.displayName}.`, { config, sessionId });
+                    // CONFIG.CONNECTION_ID is no longer the primary source.
+                    // We rely on nangoConnectionId passed in, or one specified in the seedConfig itself.
+                    if (!connectionIdToUseForSeed) {
+                        logger.error(`Salesforce Connection ID is not available for seeding ${config.displayName}. Skipping.`, { config, sessionId });
                         continue; // Skip this config item if the required connection ID is missing
                     }
-                    const response = await this.nangoService.triggerSalesforceAction(config.providerConfigKey, config_1.CONFIG.CONNECTION_ID, // Now guaranteed to be a string due to the check above
+                    const response = await this.nangoService.triggerSalesforceAction(config.providerConfigKey, connectionIdToUseForSeed, // Use the dynamic connection ID
                     'fetch', config.details.entityType, 'all', // Identifier: 'all' to apply filters/limit broadly
                     null, // Fields: null, rely on includeFields in options if needed
                     {
@@ -75,15 +78,15 @@ class ScratchPadService extends events_1.EventEmitter {
                     }
                 }
                 else if (config.provider === 'google-mail' || config.provider === 'outlook-mail') { // Example email providers
-                    const connectionIdToUse = config.connectionId || config_1.CONFIG.CONNECTION_ID; // Fallback to default if not specified
-                    if (!connectionIdToUse) {
+                    // Use connectionIdToUseForSeed which prioritizes config.connectionId then the passed nangoConnectionId
+                    if (!connectionIdToUseForSeed) {
                         logger.error(`Connection ID missing for email provider ${config.providerConfigKey} and no default available.`, { config, sessionId });
                         continue;
                     }
-                    const response = await this.nangoService.fetchEmails(config.providerConfigKey, connectionIdToUse, {
+                    const response = await this.nangoService.fetchEmails(config.providerConfigKey, connectionIdToUseForSeed, // Use the dynamic connection ID
+                    {
                         filters: {
                             ...(config.details.emailFilters || {}),
-                            limit: config.details.limit,
                         },
                     });
                     if (response.success && Array.isArray(response.data)) {
@@ -160,7 +163,7 @@ class ScratchPadService extends events_1.EventEmitter {
             }
         };
     }
-    async getScratchPadEntries(sessionId, userId) {
+    async getScratchPadEntries(sessionId, userId, nangoConnectionId) {
         let entries = this.scratchPadStore.get(sessionId);
         // Check if the session's scratchpad is empty.
         if (Object.keys(entries).length === 0) {
@@ -184,7 +187,7 @@ class ScratchPadService extends events_1.EventEmitter {
                 logger.info(`Scratchpad for session ${sessionId} (user ${userId}) is empty and user not yet seeded. Initiating default data seeding.`);
                 // Launch seedInitialData but don't await it here.
                 // It will run in the background and populate the store.
-                this.seedInitialData(sessionId, this.defaultSeedConfigs)
+                this.seedInitialData(sessionId, this.defaultSeedConfigs, nangoConnectionId) // Pass nangoConnectionId
                     .then(() => {
                     // This block executes after seedInitialData has attempted to populate the store
                     const freshEntries = this.scratchPadStore.get(sessionId); // Get the now populated entries

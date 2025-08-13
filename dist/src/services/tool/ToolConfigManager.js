@@ -9,6 +9,7 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const winston_1 = __importDefault(require("winston")); // Changed from namespace import to default import
 const zod_1 = require("zod");
+const dedicatedPlannerPrompt_1 = require("../conversation/prompts/dedicatedPlannerPrompt");
 // --- Logger Setup (Define it here if not imported) ---
 // If you have a shared logger in `src/utils/logger.ts`, fix the import path.
 // Otherwise, create the logger instance here.
@@ -70,20 +71,14 @@ class ToolConfigManager {
                     parameters: {
                         type: "object",
                         properties: {
-                            input: {
-                                type: "object",
-                                properties: {
-                                    intended_tool_name: { type: "string", description: "The intended tool name." },
-                                    missing_params: { type: "array", items: { type: "string" }, description: "REQUIRED missing parameter names." },
-                                    clarification_question: { type: "string", description: "Question to ask the user." }
-                                },
-                                required: ["intended_tool_name", "missing_params", "clarification_question"]
-                            }
+                            intended_tool_name: { type: "string", description: "The intended tool name." },
+                            missing_params: { type: "array", items: { type: "string" }, description: "REQUIRED missing parameter names." },
+                            clarification_question: { type: "string", description: "Question to ask the user." }
                         },
-                        required: ["input"]
+                        required: ["intended_tool_name", "missing_params", "clarification_question"]
                     },
                     // Add other REQUIRED fields from ToolConfig if any (e.g., input/output schemas might be optional)
-                    // If input/output are required in ToolConfig, provide placeholder/empty schemas
+                    // These are part of your ToolConfig type, not directly for Groq schema here
                     input: {},
                     nangoService: undefined,
                     default_params: {},
@@ -93,6 +88,29 @@ class ToolConfigManager {
                 this.toolMap.set(metaToolName, metaTool);
                 logger.info(`Added meta-tool '${metaToolName}' definition.`);
             }
+            // Add planParallelActions meta-tool definition programmatically
+            const plannerToolName = "planParallelActions";
+            if (!this.tools[plannerToolName]) {
+                const plannerTool = {
+                    name: plannerToolName,
+                    description: "Analyzes a complex user request to identify multiple potential actions and plan their execution. Use this for multi-step or complex requests.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            userInput: { type: "string", description: "The full text of the user's message that needs planning." }
+                        },
+                        required: ["userInput"]
+                    },
+                    // These are part of your ToolConfig type, not directly for Groq schema here
+                    input: {}, // Placeholder
+                    nangoService: undefined, // Placeholder
+                    default_params: {}, // Placeholder
+                    providerConfigKey: '__META__' // Mark as meta-tool
+                };
+                this.tools[plannerToolName] = plannerTool;
+                this.toolMap.set(plannerToolName, plannerTool);
+                logger.info(`Added meta-tool '${plannerToolName}' definition.`);
+            }
             this.providers = configData.providers;
             logger.info(`ToolConfigManager loaded ${Object.keys(this.tools).length} tools.`);
         }
@@ -101,7 +119,38 @@ class ToolConfigManager {
             throw new Error(`Failed to initialize ToolConfigManager: ${error.message}`);
         }
     }
-    // --- Tool Accessors ---
+    // --- START: NEW METHOD FOR STRATEGY 2.5 ---
+    /**
+     * Retrieves tools based on a list of categories.
+     * Always includes tools from the 'Meta' category for essential functions like asking for missing parameters.
+     * @param categories An array of category names to include.
+     * @returns A filtered array of ToolConfig objects.
+     */
+    // --- END: NEW METHOD FOR STRATEGY 2.5 ---
+    getToolInputSchema(toolName) {
+        const tool = this.toolMap.get(toolName);
+        if (!tool || !tool.parameters) {
+            return undefined;
+        }
+        // With the flattened schema, we simply return the parameters object.
+        return tool.parameters;
+    }
+    // --- IMPLEMENTED: This method provides robust validation for the ActionLauncherService ---
+    findMissingRequiredParams(toolName, parsedArgs) {
+        const inputSchema = this.getToolInputSchema(toolName);
+        if (!inputSchema || !inputSchema.required) {
+            return []; // No required parameters to check.
+        }
+        const missingParams = [];
+        for (const paramName of inputSchema.required) {
+            const value = parsedArgs[paramName];
+            const isMissing = value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+            if (isMissing) {
+                missingParams.push(paramName);
+            }
+        }
+        return missingParams;
+    }
     getToolConfig(toolName) {
         const tool = this.toolMap.get(toolName);
         if (!tool)
@@ -112,13 +161,12 @@ class ToolConfigManager {
         return Array.from(this.toolMap.values());
     }
     // --- Schema and Parameter Accessors ---
-    getToolInputSchema(toolName) {
-        const tool = this.getToolDefinition(toolName); // Use existing getter
-        const params = tool?.parameters;
-        return params?.properties?.input;
-    }
     getToolDefinition(toolName) {
         return this.toolMap.get(toolName);
+    }
+    getToolDisplayName(toolName) {
+        const tool = this.getToolDefinition(toolName);
+        return tool?.display_name || tool?.name.replace(/_/g, ' '); // Fallback to formatted name
     }
     getToolParameterProperty(toolName, paramName) {
         const inputSchema = this.getToolInputSchema(toolName);
@@ -138,21 +186,6 @@ class ToolConfigManager {
         return false;
     }
     // --- Validation ---
-    findMissingRequiredParams(toolName, parsedArgs) {
-        const inputSchema = this.getToolInputSchema(toolName);
-        const requiredParams = inputSchema?.required || [];
-        const missingThatNeedInput = [];
-        for (const paramName of requiredParams) {
-            const value = parsedArgs[paramName];
-            const isMissingValue = value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
-            if (isMissingValue && !this.canParameterBeDefaulted(toolName, paramName)) {
-                missingThatNeedInput.push(paramName);
-            }
-        }
-        if (missingThatNeedInput.length > 0)
-            logger.warn(`Validation: Missing required params for ${toolName}`, { missingThatNeedInput });
-        return missingThatNeedInput;
-    }
     findConditionallyMissingParams(toolName, parsedArgs) {
         const missing = [];
         if (!parsedArgs)
@@ -188,6 +221,29 @@ class ToolConfigManager {
         }
         return missing;
     }
+    // Method to get tool definitions suitable for the planner prompt
+    getToolDefinitionsForPlanner() {
+        // ONLY include the core entity manipulation tools for the planner.
+        // The planner's job is to decide which of these to use and with what arguments (like filters).
+        const plannerSpecificTools = ['fetch_entity', 'create_entity', 'update_entity'];
+        const allTools = this.getAllTools();
+        const filteredTools = allTools.filter(tool => plannerSpecificTools.includes(tool.name));
+        logger.debug(`Tools selected for planner: ${filteredTools.map(t => t.name).join(', ')}`);
+        return filteredTools;
+    }
+    // Helper to get the planner system prompt content
+    getPlannerSystemPrompt(userInput, identifiedToolCalls) {
+        const availableTools = this.getToolDefinitionsForPlanner();
+        const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
+        let identifiedToolsPromptSection = "No tools pre-identified.";
+        if (identifiedToolCalls.length > 0) {
+            identifiedToolsPromptSection = "The following tool calls were preliminarily identified (you should verify and integrate them into a coherent plan):\n";
+            identifiedToolCalls.forEach(tc => {
+                identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
+            });
+        }
+        return dedicatedPlannerPrompt_1.DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE.replace('{{USER_CURRENT_MESSAGE}}', userInput).replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson).replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+    }
     // Zod validation (Keep if needed)
     validateToolArgsWithZod(toolName, args) {
         logger.info(`Validating args with Zod for ${toolName}`, { args });
@@ -213,6 +269,13 @@ class ToolConfigManager {
                 throw new Error(`Validation failed for tool '${toolName}': ${error.message}`);
             }
         }
+    }
+    getToolsByCategories(categories) {
+        const allTools = this.getAllTools();
+        return allTools.filter(tool => {
+            const toolCategory = tool.category;
+            return toolCategory === 'Meta' || categories.includes(toolCategory);
+        });
     }
     // Helper function to create Zod schema for a single property
     createZodSchemaFromProperty(prop, propName) {

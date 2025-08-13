@@ -25,13 +25,13 @@ class UserSeedStatusStore {
     constructor(redisUrl) {
         this.redisClient = (0, client_1.createClient)({ url: redisUrl });
         this.redisClient.on('error', (err) => {
-            logger.error('UserSeedStatusStore: Redis Client Error', { error: err });
+            logger.debug('UserSeedStatusStore: Redis Client Error', { error: err }); // Changed to debug
         });
         this.redisClient.on('connect', () => {
             logger.info('UserSeedStatusStore: Connected to Redis.');
         });
         this.redisClient.on('reconnecting', () => {
-            logger.info('UserSeedStatusStore: Reconnecting to Redis...');
+            logger.debug('UserSeedStatusStore: Reconnecting to Redis...'); // Changed to debug
         });
     }
     async connect() {
@@ -40,7 +40,7 @@ class UserSeedStatusStore {
                 await this.redisClient.connect();
             }
             catch (err) {
-                logger.error('UserSeedStatusStore: Failed to connect to Redis during explicit connect()', { error: err });
+                logger.debug('UserSeedStatusStore: Failed to connect to Redis during explicit connect()', { error: err }); // Changed to debug
                 // Depending on your app's startup, you might want to throw or handle this more gracefully
             }
         }
@@ -61,7 +61,7 @@ class UserSeedStatusStore {
             return status === this.seededFlag;
         }
         catch (error) {
-            logger.error(`UserSeedStatusStore: Error checking seed status for userId ${userId}`, { error });
+            logger.debug(`UserSeedStatusStore: Error checking seed status for userId ${userId}`, { error }); // Changed to debug
             return false; // Fail safe: assume not seeded if Redis error
         }
     }
@@ -79,7 +79,7 @@ class UserSeedStatusStore {
             logger.info(`UserSeedStatusStore: Marked userId ${userId} as seeded.`);
         }
         catch (error) {
-            logger.error(`UserSeedStatusStore: Error marking seed status for userId ${userId}`, { error });
+            logger.debug(`UserSeedStatusStore: Error marking seed status for userId ${userId}`, { error }); // Changed to debug
         }
     }
 }

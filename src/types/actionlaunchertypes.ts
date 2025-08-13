@@ -8,24 +8,28 @@ export interface ParameterDefinition {
   description: string;
   required: boolean;
   type: string | string[]; // Use string from schema
-  currentValue?: any; // Managed client-side or pre-filled
+  currentValue?: any; // Current value, can be pre-filled or updated by user
+  hint?: string; // Optional hint text for the UI
 }
 
 // Defines a potential action identified by the analysis step or validation failure
-export interface LaunchableAction {
+export interface LaunchableAction { // This is the base structure for ActiveAction
+  toolDisplayName: string;
   id: string; // Unique UUID for this action instance
   action: string; // Verb (e.g., "fetch", "update", "execute")
   object: string; // Noun (e.g., tool name like "fetch_entity")
   toolName: string; // The actual backend tool name
   description: string; // User-friendly description or clarification question
   parameters: ParameterDefinition[]; // Full parameter list for UI rendering
-  missingParameters: string[]; // REQUIRED parameters needing input
-  status: 'pending_analysis' | 'collecting_parameters' | 'ready' | 'executing' | 'completed' | 'failed';
-  messageId?: string; // Link back to the original user message ID
+  missingParameters: string[]; // Parameters (required or conditional) needing input
+  status: 'pending_analysis' | 'collecting_parameters' | 'ready' | 'executing' | 'completed' | 'failed'; // Status of the action
+  messageId: string; // Link back to the original user message ID - Made required
   bgColor?: string; // Optional UI hint
   icon?: string; // Optional UI hint
   result?: any; // Stores ToolResult on completion/failure
   error?: string; // Stores error message if failed
+  plannerStatus?: 'ready' | 'conditional'; // Planner's original suggested status
+  plannerRequiredParams?: string[]; // Planner's original list of missing params
 }
 
 // Defines the overall response sent to client when parameters are needed
@@ -44,6 +48,8 @@ export interface UpdateParameterPayload {
 }
 
 export interface ExecuteActionPayload {
+    arguments: Record<string, any> | undefined;
+    toolName: any;
     actionId: string; // ID of the LaunchableAction to execute
 }
 

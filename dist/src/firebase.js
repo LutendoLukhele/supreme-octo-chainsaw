@@ -1,12 +1,44 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.db = void 0;
+exports.auth = exports.db = void 0;
 // src/firebase.ts
-const app_1 = require("firebase/app"); // Import getApps and getApp
-const database_1 = require("firebase/database");
+const admin = __importStar(require("firebase-admin")); // Import Firebase Admin SDK
 const config_1 = require("./config"); // Import the centralized config
 const winston_1 = __importDefault(require("winston")); // For logging
 // Basic logger for this module, can be enhanced
@@ -25,32 +57,54 @@ if (!config_1.CONFIG.FIREBASE_DATABASE_URL) {
     logger.error("CRITICAL FIREBASE CONFIG ERROR: FIREBASE_DATABASE_URL is not defined. Firebase Realtime Database cannot be determined.");
     // throw new Error("CRITICAL FIREBASE CONFIG ERROR: FIREBASE_DATABASE_URL is not defined.");
 }
-const firebaseConfig = {
-    apiKey: config_1.CONFIG.FIREBASE_API_KEY,
-    authDomain: config_1.CONFIG.FIREBASE_AUTH_DOMAIN,
-    databaseURL: config_1.CONFIG.FIREBASE_DATABASE_URL,
-    projectId: config_1.CONFIG.FIREBASE_PROJECT_ID,
-    storageBucket: config_1.CONFIG.FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: config_1.CONFIG.FIREBASE_MESSAGING_SENDER_ID,
-    appId: config_1.CONFIG.FIREBASE_APP_ID,
-    measurementId: config_1.CONFIG.FIREBASE_MEASUREMENT_ID
-};
+// --- Add checks for new required env vars for Admin SDK cert ---
+if (!config_1.CONFIG.FIREBASE_CLIENT_EMAIL) {
+    logger.error("CRITICAL FIREBASE ADMIN CONFIG ERROR: FIREBASE_CLIENT_EMAIL is not defined (required for Admin SDK service account).");
+    // Consider throwing an error if Firebase is absolutely essential
+}
+if (!config_1.CONFIG.FIREBASE_PRIVATE_KEY) {
+    logger.error("CRITICAL FIREBASE ADMIN CONFIG ERROR: FIREBASE_PRIVATE_KEY is not defined (required for Admin SDK service account).");
+    // Consider throwing an error if Firebase is absolutely essential
+}
 let app;
-// Check if Firebase app has already been initialized to prevent re-initialization errors
-if (!(0, app_1.getApps)().length) {
+// Check if Firebase Admin app has already been initialized
+if (!admin.apps.length) {
     try {
-        app = (0, app_1.initializeApp)(firebaseConfig);
-        logger.info("Firebase app initialized successfully.");
+        // Prepare service account credentials from CONFIG
+        // Ensure FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY are in your CONFIG
+        const serviceAccount = {
+            projectId: config_1.CONFIG.FIREBASE_PROJECT_ID,
+            clientEmail: config_1.CONFIG.FIREBASE_CLIENT_EMAIL,
+            // Replace escaped newlines in private key if stored as a single line in .env
+            privateKey: config_1.CONFIG.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        };
+        // Validate that the required fields for the cert are present
+        if (!serviceAccount.projectId || !serviceAccount.clientEmail || !serviceAccount.privateKey) {
+            const missingFields = [
+                !serviceAccount.projectId && "projectId",
+                !serviceAccount.clientEmail && "clientEmail",
+                !serviceAccount.privateKey && "privateKey"
+            ].filter(Boolean).join(", ");
+            const errorMessage = `Firebase Admin SDK initialization failed: Missing required fields in service account configuration: ${missingFields}. Ensure FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY are correctly set in your environment configuration.`;
+            logger.error(errorMessage);
+            throw new Error(errorMessage);
+        }
+        app = admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount), // Type assertion
+            databaseURL: config_1.CONFIG.FIREBASE_DATABASE_URL
+        });
+        logger.info("Firebase Admin SDK initialized successfully.");
     }
     catch (error) {
-        logger.error(`Firebase initialization failed: ${error.message}. Ensure all firebaseConfig values (especially projectId and databaseURL) are correctly set in your Cloud Run environment configuration.`);
+        logger.error(`Firebase Admin SDK initialization failed: ${error.message}. Ensure FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY, and FIREBASE_DATABASE_URL are correctly set in your environment configuration.`);
         // Re-throw the error to ensure the application doesn't proceed in a broken state
-        // if Firebase is essential.
         throw error;
     }
 }
 else {
-    app = (0, app_1.getApp)(); // Get the already initialized app
-    logger.info("Firebase app already initialized. Using existing app.");
+    app = admin.app(); // Get the already initialized default app
+    logger.info("Firebase Admin SDK already initialized. Using existing app.");
 }
-exports.db = (0, database_1.getDatabase)(app);
+exports.db = admin.database(app); // Get database instance from the specific app
+exports.auth = admin.auth(app); // Export Firebase Admin Auth service from the specific app
+exports.default = admin; // Optionally export the entire admin namespace

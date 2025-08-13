@@ -48,15 +48,15 @@ const getEnvVar = (key: string, defaultValue?: string, isCritical: boolean = fal
 
 export const CONFIG = {
   
-    REDIS_URL: getEnvVar('REDIS_URL', 'redis://localhost:6379'),
+    REDIS_URL: getEnvVar('REDIS_URL', 'redis://default:ewgkpSkF91VxHqMdZJ5mqHRpqaOut6jB@redis-15785.c276.us-east-1-2.ec2.redns.redis-cloud.com:15785'),
     OPEN_AI_API_KEY: getEnvVar('OPEN_AI_API_KEY', undefined, true), // Mark as critical
     GROQ_API_KEY: getEnvVar('GROQ_API_KEY', undefined, true),       // Mark as critical
-    CONNECTION_ID: getEnvVar('CONNECTION_ID', ''), // User-specific, might not always be in .env
-    MODEL_NAME: getEnvVar('MODEL_NAME', 'meta-llama/llama-4-scout-17b-16e-instruct'),
+    CONNECTION_ID: getEnvVar('CONNECTION_ID', '2154ba8d-ce48-4a46-b4d3-295f1aa9e450'), // User-specific, might not always be in .env
+    MODEL_NAME: getEnvVar('MODEL_NAME', 'llama-3.3-70b-versatile'),
     MAX_TOKENS: parseInt(getEnvVar('MAX_TOKENS', '1000')),
     STREAM_CHUNK_SIZE: parseInt(getEnvVar('STREAM_CHUNK_SIZE', '100')),
     TOOL_CONFIG_PATH: getEnvVar('TOOL_CONFIG_PATH', './config/tool-config.json'),
-    NANGO_SECRET_KEY: getEnvVar('NANGO_SECRET_KEY'), // Potentially critical depending on usage
+    NANGO_SECRET_KEY: getEnvVar('NANGO_SECRET_KEY', '2065f150-7636-4592-8418-5affe59a5d94'), // Potentially critical depending on usage
     PROVIDER_CONFIG_KEY: getEnvVar('PROVIDER_CONFIG_KEY', 'salesforce-2'),
     // CONNECTION_ID is user-specific and should not be a global config. It will be fetched dynamically.
     NANGO_BASE_URL: getEnvVar('NANGO_BASE_URL', 'https://api.nango.dev'),
@@ -67,6 +67,8 @@ export const CONFIG = {
     FIREBASE_STORAGE_BUCKET: getEnvVar('FIREBASE_STORAGE_BUCKET'),
     FIREBASE_MESSAGING_SENDER_ID: getEnvVar('FIREBASE_MESSAGING_SENDER_ID'),
     FIREBASE_APP_ID: getEnvVar('FIREBASE_APP_ID'),
+    FIREBASE_PRIVATE_KEY: getEnvVar('FIREBASE_PRIVATE_KEY'),
+    FIREBASE_CLIENT_EMAIL: getEnvVar('FIREBASE_CLIENT_EMAIL', 'lutendolukheles@gmail.com'),
     FIREBASE_MEASUREMENT_ID: getEnvVar('FIREBASE_MEASUREMENT_ID'), // Optional
     NODE_ENV: nodeEnv, // Add NODE_ENV to CONFIG as well
   };

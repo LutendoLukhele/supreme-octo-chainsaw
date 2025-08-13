@@ -23,13 +23,13 @@ export class UserSeedStatusStore {
     this.redisClient = createClient({ url: redisUrl });
 
     this.redisClient.on('error', (err:any) => {
-      logger.error('UserSeedStatusStore: Redis Client Error', { error: err });
+      logger.debug('UserSeedStatusStore: Redis Client Error', { error: err }); // Changed to debug
     });
     this.redisClient.on('connect', () => {
       logger.info('UserSeedStatusStore: Connected to Redis.');
     });
     this.redisClient.on('reconnecting', () => {
-      logger.info('UserSeedStatusStore: Reconnecting to Redis...');
+      logger.debug('UserSeedStatusStore: Reconnecting to Redis...'); // Changed to debug
     });
   }
 
@@ -38,7 +38,7 @@ export class UserSeedStatusStore {
       try {
         await this.redisClient.connect();
       } catch (err) {
-        logger.error('UserSeedStatusStore: Failed to connect to Redis during explicit connect()', { error: err });
+        logger.debug('UserSeedStatusStore: Failed to connect to Redis during explicit connect()', { error: err }); // Changed to debug
         // Depending on your app's startup, you might want to throw or handle this more gracefully
       }
     }
@@ -58,7 +58,7 @@ export class UserSeedStatusStore {
       const status = await this.redisClient.get(`${this.userSeedPrefix}${userId}`);
       return status === this.seededFlag;
     } catch (error) {
-      logger.error(`UserSeedStatusStore: Error checking seed status for userId ${userId}`, { error });
+      logger.debug(`UserSeedStatusStore: Error checking seed status for userId ${userId}`, { error }); // Changed to debug
       return false; // Fail safe: assume not seeded if Redis error
     }
   }
@@ -74,7 +74,7 @@ export class UserSeedStatusStore {
       });
       logger.info(`UserSeedStatusStore: Marked userId ${userId} as seeded.`);
     } catch (error) {
-      logger.error(`UserSeedStatusStore: Error marking seed status for userId ${userId}`, { error });
+      logger.debug(`UserSeedStatusStore: Error marking seed status for userId ${userId}`, { error }); // Changed to debug
     }
   }
 }

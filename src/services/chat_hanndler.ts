@@ -1,15 +1,16 @@
 // src/chat_hanndler.ts (ensure filename matches import in server.ts)
 
-import { ref, push, set, update } from 'firebase/database';
 import winston from 'winston';
 import { db } from '../firebase'; // Ensure path to initialized RTDB is correct
 import { LLMResponse, ToolResult } from './conversation/types'; // Import necessary types
+import { ref } from 'process';
 
 // Define structure for pending tool calls if not already globally defined
 interface PendingToolCallData {
     id: string;
     name: string;
     arguments: string;
+    // sourceStream?: string; // Optional: to track if it came from 'conversational' or 'dedicated_tool' stream
     status: 'pending';
     timestamp: number;
 }
@@ -46,8 +47,8 @@ export async function handleChatMessage(
   }
 
   // 1. Save user message under chats/{userId}/{sessionId}/messages
-  const messagesRef = ref(db, `chats/${userId}/${sessionId}/messages`);
-  const userMessageRef = push(messagesRef);
+  const messagesRef = db.ref(`chats/${userId}/${sessionId}/messages`);
+  const userMessageRef = messagesRef.push();
   const messageId = userMessageRef.key;
 
   if (!messageId) {
@@ -58,7 +59,7 @@ export async function handleChatMessage(
   logger.info(`Generated messageId: ${messageId}`, { userId, sessionId });
 
   try {
-    await set(userMessageRef, {
+    await userMessageRef.set({
       content: userMessage,
       sender: 'user',
       type: 'text',
@@ -72,9 +73,9 @@ export async function handleChatMessage(
   }
 
   // 2. Create initial AI response structure under chats/{userId}/{sessionId}/aiResponses
-  const aiResponseRef = ref(db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+  const aiResponseRef = db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
   try {
-    await set(aiResponseRef, {
+    await aiResponseRef.set({
       aiResponse: "Processing...",
       segments: [],
       showCardStack: false,
@@ -92,10 +93,14 @@ export async function handleChatMessage(
 
 /**
  * Records the final AI text response and registers pending tool calls in Firebase.
+ * NOTE: With the multi-stream ConversationService, this function's role changes.
+ * AI text is primarily handled by the conversational stream. Tool calls come from multiple streams.
+ * This function might be refactored to only handle AI text, or be replaced by more specific functions
+ * called by listeners to ConversationService events/chunks (e.g., when 'conversational' stream ends).
  * Uses userId and sessionId for pathing.
  */
 export async function recordAiResponseAndToolCalls(
-    userId: string, // <-- Added userId
+    userId: string,
     sessionId: string,
     messageId: string,
     aiResponse: LLMResponse
@@ -109,20 +114,24 @@ export async function recordAiResponseAndToolCalls(
 
     try {
         // 1. Update AI Response content under chats/{userId}/{sessionId}/aiResponses
-        const aiResponseRef = ref(db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+        // This part is relevant for recording the AI's main textual response.
+        // It should be called with the final, aggregated text from the conversational stream.
+        const aiResponseRef = db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
         const aiUpdateData = {
             aiResponse: aiResponse.content || "",
             segments: aiResponse.content ? aiResponse.content.split('\n') : [], // Example segmentation
             showCardStack: !!(aiResponse.content && aiResponse.content.includes('\n')), // Example logic
             status: 'complete' // Mark generation as complete
-        };
-        await update(aiResponseRef, aiUpdateData);
+        }; // TODO: Ensure aiResponse.content is the correct final text from the conversational stream.
+        await aiResponseRef.update(aiUpdateData);
         logger.info(`Updated AI response content`, { userId, sessionId, messageId });
 
         // 2. Record pending tool calls under chats/{userId}/{sessionId}/toolCalls
         if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
             logger.info(`Recording ${aiResponse.toolCalls.length} pending tool calls`, { userId, sessionId, messageId });
-            const toolCallsRef = ref(db, `chats/${userId}/${sessionId}/toolCalls/${messageId}`);
+            const toolCallsRef = db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}`);
+            // This assumes aiResponse.toolCalls are all the tool calls for this messageId. // TODO: This was changed, remove this comment if no longer true
+            // With multiple streams, tool calls are now recorded individually by `recordToolCallIntent`.
             const pendingToolCalls: Record<string, PendingToolCallData> = {};
             for (const toolCall of aiResponse.toolCalls) {
                 if (toolCall) {
@@ -135,23 +144,16 @@ export async function recordAiResponseAndToolCalls(
                     };
                 }
             }
-            // const pendingToolCalls = aiResponse.toolCalls.reduce(
-            //     (acc: Record<string, PendingToolCallData>, toolCall: LLMResponse['toolCalls'][number]) => {
-            //         if (toolCall) {
-            //             acc[toolCall.id] = {
-            //         }
-            //         return acc;
-            //     },{} as Record<string, PendingToolCallData>);
-            await set(toolCallsRef, pendingToolCalls); // Set the object for this messageId
+            await toolCallsRef.set(pendingToolCalls); // Set the object for this messageId
             logger.info(`Recorded pending tool calls`, { userId, sessionId, messageId, toolCallIds: Object.keys(pendingToolCalls) });
         } else {
             logger.info(`No tool calls to record`, { userId, sessionId, messageId });
         }
     } catch (error: any) {
         logger.error('Failed to record AI response or tool calls', { error: error.message, userId, sessionId, messageId });
-        const aiResponseRef = ref(db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+        const aiResponseRef = db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
         try {
-            await update(aiResponseRef, {
+            await aiResponseRef.update({
                 status: 'error',
                 error: `Failed to record response details: ${error instanceof Error ? error.message : String(error)}`
             });
@@ -160,6 +162,40 @@ export async function recordAiResponseAndToolCalls(
         }
        throw error;
     }
+}
+
+/**
+ * Records a single tool call intent in Firebase, typically when identified by a specific stream.
+ */
+export async function recordToolCallIntent(
+  userId: string,
+  sessionId: string,
+  messageId: string,
+  toolCall: { id: string; function: { name: string; arguments: string } },
+  sourceStream: string // e.g., 'potential_tool_call', 'dedicated_tool_call', 'conversational'
+): Promise<void> {
+  logger.info(`recordToolCallIntent called`, { userId, sessionId, messageId, toolCallId: toolCall.id, sourceStream });
+  if (!userId || !sessionId || !messageId || !toolCall || !toolCall.id) {
+    const errorMsg = `Invalid arguments for recordToolCallIntent.`;
+    logger.error(errorMsg, { userId, sessionId, messageId, toolCallId: toolCall?.id });
+    throw new Error(errorMsg);
+  }
+
+  try {
+    const toolCallDbRef = db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCall.id}`);
+    const pendingToolCallData: PendingToolCallData = {
+      id: toolCall.id,
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments,
+      status: 'pending',
+      timestamp: Date.now(),
+    };
+    await toolCallDbRef.set(pendingToolCallData);
+    logger.info(`Recorded pending tool call intent from ${sourceStream}`, { userId, sessionId, messageId, toolCallId: toolCall.id, name: toolCall.function.name });
+  } catch (error: any) {
+    logger.error('Failed to record tool call intent', { error: error.message, userId, sessionId, messageId, toolCallId: toolCall.id });
+    throw error;
+  }
 }
 
 /**
@@ -178,8 +214,7 @@ export async function updateToolCallResult(
   }
 
   // Build the path to this specific tool call
-  const toolCallRef = ref(
-    db,
+  const toolCallRef = db.ref(
     `chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}`
   );
 
@@ -190,7 +225,7 @@ export async function updateToolCallResult(
   const records = Array.isArray(raw?.data) ? raw.data : [];
 
   // Now push EVERYTHING the UI needs into RTDB:
-  await update(toolCallRef, {
+  await toolCallRef.update({
     status:      result.status,           // success / failed
     completedAt: Date.now(),              // signal "done"
     // store the full raw “data” object under `result`
@@ -221,8 +256,8 @@ export async function recordFollowUpResponse(
     }
   try {
     // Path: chats/{userId}/{sessionId}/toolCalls/{messageId}/{toolCallId}/followUp
-    const followUpRef = ref(db, `chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}/followUp`);
-    await set(followUpRef, {
+    const followUpRef = db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}/followUp`);
+    await followUpRef.set({
       content: fullContent,
       timestamp: Date.now()
     });

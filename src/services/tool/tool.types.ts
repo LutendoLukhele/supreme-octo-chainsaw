@@ -23,13 +23,11 @@ export interface ToolConfig {
 export interface ToolCall {
     id: string;
     name: string;
-    ToolName: '';
-    arguments: any;
-    args: {};
-    result: {};
-    
+    arguments: Record<string, any>;
     sessionId: string;
+    userId: string;
 }
+
 
 export enum EntityType {
     Account = 'Account',

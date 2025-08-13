@@ -54,9 +54,27 @@ export interface Message {
 
 }
 
+/**
+ * Represents an action that has all its parameters validated and is ready
+ * for user confirmation before execution.
+ */
+export interface PreparedAction {
+  id: string;                   // The unique ID for this action instance
+  toolName: string;             // The internal name of the tool (e.g., 'web_search')
+  toolDisplayName: string;      // A user-friendly display name for the tool (e.g., "Search Web")
+  arguments: Record<string, any>; // The fully resolved arguments for the tool
+  argumentsDisplay?: Record<string, string>; // Optional: User-friendly representation of arguments (e.g., "Query: 'latest AI news'")
+  status: 'pending_confirmation'; // Indicates the current state of this action object
+  messageId: string;            // The ID of the assistant's message that proposed this action
+  sessionId: string;            // The session ID this action belongs to
+  userId: string;               // The user ID associated with this action
+  // Any other relevant details for the client to display or for server-side tracking
+}
+
+
 // Configuration interface
 export interface ConversationConfig extends ServiceConfig {
-  TOOL_CONFIG_PATH: 'config/tool-config.json';
+  TOOL_CONFIG_PATH: string;
   nangoService: import("../NangoService").NangoService;
   client: any;
   tools: any[];

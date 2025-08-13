@@ -2,438 +2,167 @@
   "tools": [
     {
       "name": "request_missing_parameters",
-      "description": "Use this tool ONLY when required parameters for another tool are missing and cannot be reasonably defaulted. Provide the intended tool and the list of missing required parameter names.",
+      "description": "Use this tool ONLY when required parameters for another tool are missing.",
       "providerConfigKey": "__META__",
+      "category": "Meta",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
-            "type": "object",
-            "properties": {
-              "intended_tool_name": {
-                "type": "string",
-                "description": "The exact name of the tool the user likely intended to use (e.g., 'fetch_entity').",
-                "prompt": "Which tool was the user trying to use?",
-                "hint": "Specify the target tool name like 'fetch_entity', 'send_email', etc."
-              },
-              "missing_params": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A list of the exact names of REQUIRED parameters that are missing for the 'intended_tool_name'.",
-                "prompt": "Which required parameters are missing?",
-                "hint": "Provide a JSON array of strings, e.g., [\"to\", \"subject\"]"
-              },
-              "clarification_question": {
-                "type": "string",
-                "description": "A clear question to ask the user to obtain the missing parameters, phrased from the assistant's perspective.",
-                "prompt": "What question should I ask the user?",
-                "hint": "e.g., 'Who should I send the email to, and what is the subject?'"
-              }
-            },
-            "required": [
-              "intended_tool_name",
-              "missing_params",
-              "clarification_question"
-            ]
+          "intended_tool_name": {
+            "type": "string",
+            "description": "The exact name of the tool the user likely intended to use."
+          },
+          "missing_params": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "A list of the REQUIRED parameters that are missing."
+          },
+          "clarification_question": {
+            "type": "string",
+            "description": "A clear question to ask the user to obtain the missing parameters."
           }
         },
-        "required": ["input"]
-      },
-      "input": { "type": "object", "properties": {} },
-      "output": { "type": "object", "properties": {} }
+        "required": [
+          "intended_tool_name",
+          "missing_params",
+          "clarification_question"
+        ]
+      }
     },
     {
       "name": "fetch_emails",
-      "description": "Fetch Gmail emails with advanced filtering options based on criteria like sender, subject, date, labels, or attachments.",
+      "description": "Fetch Gmail emails with advanced filtering options.",
       "providerConfigKey": "google-mail",
+      "category": "Email",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
+          "operation": {
+            "type": "string",
+            "enum": ["fetch"],
+            "description": "Specifies the operation, always 'fetch'."
+          },
+          "filters": {
             "type": "object",
+            "description": "Optional: Criteria to filter emails.",
+            "optional": true,
             "properties": {
-              "operation": {
-                "type": "string",
-                "enum": ["fetch"],
-                "description": "Specifies the operation to perform, always 'fetch' for this tool.",
-                "prompt": "What email operation should I perform?",
-                "hint": "Fixed value: 'fetch'"
-              },
-              "backfillPeriodMs": {
-                "type": "integer",
-                "description": "Optional: How far back in time to search for emails, specified in milliseconds.",
-                "optional": true,
-                "prompt": "How far back should I fetch emails (in milliseconds)?",
-                "hint": "e.g., 86400000 for 1 day, 604800000 for 1 week"
-              },
-              "filters": {
-                "type": "object",
-                "description": "Optional: A set of criteria to filter the emails.",
-                "optional": true,
-                "properties": {
-                  "sender": {
-                    "type": "string",
-                    "description": "Filter by the sender's email address.",
-                    "optional": true,
-                    "prompt": "Filter by sender email?",
-                    "hint": "e.g., someone@example.com"
-                  },
-                  "recipient": {
-                    "type": "string",
-                    "description": "Filter by the recipient's email address.",
-                    "optional": true,
-                    "prompt": "Filter by recipient email?",
-                    "hint": "e.g., recipient@example.com"
-                  },
-                  "subject": {
-                    "type": "object",
-                    "description": "Filter by keywords or phrases in the email subject.",
-                    "optional": true,
-                    "properties": {
-                      "contains": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Subject must contain ALL these keywords.", "prompt": "Keywords in subject?" },
-                      "startsWith": { "type": "string", "optional": true, "description": "Subject must start with this text.", "prompt": "Subject starts with?" },
-                      "endsWith": { "type": "string", "optional": true, "description": "Subject must end with this text.", "prompt": "Subject ends with?" },
-                      "exact": { "type": "string", "optional": true, "description": "Subject must match exactly.", "prompt": "Exact subject?" }
-                    }
-                  },
-                  "dateRange": {
-                    "type": "object",
-                    "description": "Filter emails received within a specific date range.",
-                    "optional": true,
-                    "properties": {
-                      "after": { "type": "string", "format": "date-time", "optional": true, "description": "Include emails received after this ISO 8601 timestamp.", "prompt": "Emails after date (ISO)?" },
-                      "before": { "type": "string", "format": "date-time", "optional": true, "description": "Include emails received before this ISO 8601 timestamp.", "prompt": "Emails before date (ISO)?" }
-                    }
-                  },
-                  "hasAttachment": { "type": "boolean", "optional": true, "description": "Filter for emails that have attachments.", "prompt": "Has attachment?" },
-                  "labels": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Filter by Gmail labels (e.g., INBOX, IMPORTANT, or custom labels).", "prompt": "Filter by labels?" },
-                  "includeBody": { "type": "boolean", "optional": true, "description": "Whether to include the full email body in the result (can be large). Defaults to false.", "prompt": "Include body?" },
-                  "excludeCategories": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Gmail categories to exclude (e.g., Promotions, Social, Updates).", "prompt": "Exclude categories?" },
-                  "isRead": { "type": "boolean", "optional": true, "description": "Filter based on read/unread status (true for read, false for unread).", "prompt": "Read status?" },
-                  "isImportant": { "type": "boolean", "optional": true, "description": "Filter for emails marked as important by Gmail.", "prompt": "Important only?" },
-                  "includeSpam": { "type": "boolean", "optional": true, "description": "Whether to include emails from the Spam folder. Defaults to false.", "prompt": "Include spam?" },
-                  "includeTrash": { "type": "boolean", "optional": true, "description": "Whether to include emails from the Trash folder. Defaults to false.", "prompt": "Include trash?" },
-                  "limit": { "type": "integer", "description": "Maximum number of emails to return (default/max may vary).", "optional": true, "prompt": "Max results?" },
-                  "offset": { "type": "integer", "description": "Number of emails to skip (for pagination).", "optional": true, "prompt": "Skip how many?" }
-                },
-                "prompt": "Specify email filters (optional)",
-                "hint": "Use filters like sender, subject, dateRange, etc."
-              }
-            },
-            "required": ["operation"] 
+              "sender": { "type": "string", "description": "Filter by sender's email.", "optional": true },
+              "recipient": { "type": "string", "description": "Filter by recipient's email.", "optional": true },
+              "dateRange": { "type": "object", "description": "Filter by date range.", "optional": true, "properties": { "after": { "type": "string" }, "before": { "type": "string" } } },
+              "hasAttachment": { "type": "boolean", "description": "Filter for emails with attachments.", "optional": true }
+            }
           }
         },
-        "required": ["input"]
+        "required": ["operation"] 
       }
     },
     {
       "name": "send_email",
       "description": "Send an email via Gmail.",
       "providerConfigKey": "google-mail",
+      "category": "Email",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
-            "type": "object",
-            "properties": {
-              "operation": { "type": "string", "enum": ["send"], "description": "Operation must be 'send'." },
-              "to": { "type": "string", "description": "The recipient's email address.", "prompt": "Recipient email?" },
-              "subject": { "type": "string", "description": "The subject line of the email.", "prompt": "Subject?" },
-              "body": { "type": "string", "description": "The main content/body of the email.", "prompt": "Body?" }
-            },
-            "required": ["operation", "to", "subject", "body"]
-          }
+          "operation": { "type": "string", "enum": ["send"], "description": "Operation must be 'send'." },
+          "to": { "type": "string", "description": "The recipient's email address." },
+          "subject": { "type": "string", "description": "The subject line of the email." },
+          "body": { "type": "string", "description": "The main content/body of the email." }
         },
-        "required": ["input"]
+        "required": ["operation", "to", "subject", "body"]
       }
     },
     {
       "name": "fetch_entity",
-      "description": "Fetch Salesforce records (Account, Contact, Lead, Deal, etc.) with optional identifier or advanced filtering.",
+      "description": "Fetch Salesforce records with advanced filtering.",
       "providerConfigKey": "salesforce-2",
+      "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
+          "operation": { "type": "string", "enum": ["fetch"], "description": "Operation must be 'fetch'." },
+          "entityType": {
+            "type": "string",
+            "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
+            "description": "The type of Salesforce object to fetch."
+          },
+          "identifier": {
+            "type": "string",
+            "description": "Optional: ID or unique value (Name/Email) to fetch a single record. Use 'all' for multiple records.",
+            "optional": true
+          },
+          "filters": {
             "type": "object",
+            "description": "Optional: Advanced criteria for filtering records.",
+            "optional": true,
             "properties": {
-              "operation": { "type": "string", "enum": ["fetch"], "description": "Operation must be 'fetch'." },
-              "entityType": {
-                "type": "string",
-                "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
-                "description": "The type of Salesforce object to fetch.",
-                "prompt": "Which entity type?"
-              },
-              "identifier": {
-                "type": "string",
-                "description": "Optional: The specific ID or unique field value (like Name or Email based on entityType) to fetch a single record. Use 'all' to fetch multiple records (requires filters or uses defaults).",
-                "optional": true, 
-                "prompt": "Specific record identifier? (ID, Name, Email, or 'all')",
-                "hint": "e.g., 'Acme Corp', 'test@example.com', '001...' or 'all'"
-              },
-              "identifierType": {
-                "type": "string",
-                "description": "Optional: Specifies which field the 'identifier' value refers to (e.g., 'Id', 'Name', 'Email'). Only needed if 'identifier' is provided and isn't an Id or 'all'.",
-                "optional": true,
-                "prompt": "Type of identifier provided?",
-                "hint": "e.g., Name, Email (defaults based on entity if omitted)"
-              },
-              "filters": {
-                "type": "object",
-                "description": "Optional: Advanced criteria for filtering records when fetching multiple. Required if 'identifier' is 'all' or omitted.",
-                "optional": true,
-                "properties": {
-                  "conditions": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "field": { "type": "string", "description": "Salesforce API field name (e.g., 'Industry')." },
-                        "operator": { "type": "string", "enum": ["equals", "notEquals", "greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "contains", "notContains", "startsWith", "endsWith", "in", "notIn", "between", "isNull", "isNotNull"], "description": "Comparison operator." },
-                        "value": { "type": ["string", "number", "boolean", "array", "object", "null"], "description": "Single value for comparison (can be null)." },
-                        "values": { "type": "array", "items": { "type": ["string", "number", "boolean", "null"] }, "nullable": true, "description": "Multiple values for 'in', 'notIn', 'between' operators (usually strings, numbers, booleans, or null)." }
-                      },
-                      "required": ["field", "operator"]
-                    },
-                    "description": "List of filter conditions."
-                  },
-                  "logic": { "type": "string", "optional": true, "description": "Logical combination of conditions (e.g., '1 AND (2 OR 3)'). Defaults to AND if multiple conditions exist." },
-                  "orderBy": { "type": "array", "items": { "type": "object", "properties": { "field": { "type": "string" }, "direction": { "type": "string", "enum": ["ASC", "DESC"] } }, "required": ["field"] }, "optional": true, "description": "Sorting criteria." },
-                  "limit": { "type": "number", "optional": true, "description": "Maximum number of records. Defaults usually apply." },
-                  "offset": { "type": "number", "optional": true, "description": "Number of records to skip (pagination)." },
-                  "includeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to return. If omitted, default fields are returned." },
-                  "excludeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to exclude." },
-                  "timeFrame": { "type": "string", "optional": true, "description": "Predefined time frame (e.g., 'last7days')." },
-                  "groupBy": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Fields for grouping results." },
-                  "aggregate": { "type": "array", "items": { "type": "object", "properties": { "function": { "type": "string", "enum": ["SUM", "AVG", "COUNT", "MIN", "MAX"] }, "field": { "type": "string" }, "alias": { "type": "string" } }, "required": ["function", "field"] }, "optional": true, "description": "Aggregation functions." },
-                  "includeDeleted": { "type": "boolean", "optional": true, "description": "Include deleted records? Defaults to false." }
-                },
-                "prompt": "Define filters (if fetching multiple records)",
-                "hint": "Use conditions, logic, limit, etc."
-              },
-              "fields": { 
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Optional: Specific fields to include in the results, alternative to 'filters.includeFields'.",
-                "optional": true,
-                "prompt": "Which specific fields to return?",
-                "hint": "e.g., [\"Name\", \"Phone\"]"
-              }
-            },
-            "required": ["operation", "entityType"]
+              "conditions": { "type": "array", "items": { "type": "object" }, "description": "List of filter conditions." },
+              "logic": { "type": "string", "optional": true, "description": "Logical combination of conditions (e.g., '1 AND 2')." },
+              "limit": { "type": "number", "optional": true, "description": "Maximum number of records." }
+            }
           }
         },
-        "required": ["input"]
+        "required": ["operation", "entityType"]
       }
     },
     {
       "name": "create_entity",
-      "description": "Create a new Salesforce record (Account, Contact, Lead, etc.) with optional duplicate checking.",
+      "description": "Create a new Salesforce record.",
        "providerConfigKey": "salesforce-2",
+       "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
+          "operation": { "type": "string", "enum": ["create"], "description": "Operation must be 'create'." },
+          "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
+          "fields": {
             "type": "object",
-            "properties": {
-              "operation": { "type": "string", "enum": ["create"], "description": "Operation must be 'create'." },
-              "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
-              "fields": {
-                "type": "object",
-                "description": "Required: Key-value pairs of fields and values for the new record.",
-                "properties": {
-                   "Name": { "type": "string", "description": "Name (required for Account, Contact, Lead, Deal).", "optional": false }, 
-                   "Email": { "type": "string", "description": "Email (required for Contact, Lead).", "optional": false } 
-                },
-                "additionalProperties": true, 
-                "prompt": "Provide fields for the new {entityType}"
-              },
-              "records": { "type": "array", "items": { "type": "object" }, "optional": true, "description": "Optional: Provide multiple records for batch creation." },
-              "checkDuplicates": { "type": "boolean", "optional": true, "description": "Optional: Check for duplicates before creating? Defaults to false." },
-              "duplicateFilters": { "type": "object",  "optional": true, "description": "Optional: Filters to identify potential duplicates if checkDuplicates is true." },
-              "useTemplate": { "type": "string", "optional": true, "description": "Optional: Name of a template to use." },
-              "templateParams": { "type": "object", "properties": {}, "additionalProperties": true, "optional": true, "description": "Optional: Parameters for the template." }
-            },
-            "required": ["operation", "entityType", "fields"] 
+            "description": "Required: Key-value pairs of fields and values for the new record."
           }
         },
-        "required": ["input"]
+        "required": ["operation", "entityType", "fields"] 
       }
     },
     {
       "name": "update_entity",
-      "description": "Update existing Salesforce record(s) identified by ID, unique field, or filters.",
+      "description": "Update existing Salesforce record(s).",
       "providerConfigKey": "salesforce-2",
+      "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "input": {
-            "type": "object",
-            "properties": {
-              "operation": { "type": "string", "enum": ["update"], "description": "Operation must be 'update'." },
-              "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to update." },
-              "identifier": { "type": "string", "optional": true, "description": "Optional: ID or unique field value to identify a SINGLE record to update." },
-              "identifierType": { "type": "string", "optional": true, "description": "Required if 'identifier' is provided and isn't an ID. Specifies the field 'identifier' refers to (e.g., 'Name', 'Email')." },
-              "filters": { "type": "object", "optional": true, "description": "Optional: Filters to identify MULTIPLE records to update." },
-              "fields": {
-                "type": "object", "minProperties": 1,
-                "description": "Required: Key-value pairs of fields and their new values.",
-                "properties": {}, "additionalProperties": true, 
-                "prompt": "Fields to update and their new values"
-              },
-              "batchOptions": { "type": "object",  "optional": true, "description": "Optional: Options for batch processing." }
-            },
-            "required": ["operation", "entityType", "fields"]
+          "operation": { "type": "string", "enum": ["update"], "description": "Operation must be 'update'." },
+          "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to update." },
+          "identifier": { "type": "string", "optional": true, "description": "Optional: ID or unique field value to identify a SINGLE record." },
+          "filters": { "type": "object", "optional": true, "description": "Optional: Filters to identify MULTIPLE records." },
+          "fields": {
+            "type": "object", "minProperties": 1,
+            "description": "Required: Key-value pairs of fields and their new values."
           }
         },
-        "required": ["input"]
+        "required": ["operation", "entityType", "fields"]
       }
     }
   ],
-
-  
-    "beats": [
-      {
-        "name": "kickoff_beat",
-        "description": "Session start: suggest initial actions to get going.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sessionId":  { "type": "string" },
-            "messageId":  { "type": "string" },
-            "scratchSummary": {
-              "type": "object",
-              "description": "Optional counts of cached entities, e.g. { leads:10, deals:5 }"
-            }
-          },
-          "required": ["sessionId","messageId"]
-        },
-        "output": {
-          "type": "object",
-          "properties": {
-            "id":               { "type": "string" },
-            "timestamp":        { "type": "string", "format":"date-time" },
-            "type":             { "type": "string", "const":"kickoff" },
-            "prompt":           { "type": "string" },
-            "suggestedActions": { "type":"array","items":{} }
-          },
-          "required": ["id","timestamp","type","prompt","suggestedActions"]
-        }
-      },
-
-      {
-        "name": "insight_from_scratch",
-        "description": "Generate an insight beat by fuzzy‐querying your session’s scratchpad memory.",
-        "parameters": {
-          "type":"object",
-          "properties": {
-            "sessionId":  { "type":"string" },
-            "messageId":  { "type":"string" },
-            "query":      { "type":"string" },
-            "objectType": {
-              "type":"string",
-              "enum":["Deal","Lead","Task","Message"],
-              "description":"Optional: limit search to this type."
-            },
-            "limit": { "type":"integer","default":5 }
-          },
-          "required":["sessionId","messageId","query"]
-        },
-        "output": {
-          "type":"object",
-          "properties": {
-            "id":               { "type":"string" },
-            "timestamp":        { "type":"string","format":"date-time" },
-            "type":             { "type":"string","const":"insight" },
-            "prompt":           { "type":"string" },
-            "suggestedActions": { "type":"array","items":{} }
-          },
-          "required":["id","timestamp","type","prompt","suggestedActions"]
-        }
-      },
-
-      {
-        "name": "pre-tool-call_beat",
-        "description": "Before calling a tool: confirm or collect missing parameters.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "sessionId":         { "type":"string" },
-            "messageId":         { "type":"string" },
-            "intendedToolName":  { "type":"string" },
-            "missingParams":     { "type":"array","items":{ "type":"string" } }
-          },
-          "required": ["sessionId","messageId","intendedToolName","missingParams"]
-        },
-        "output": {
-          "type":"object",
-          "properties": {
-            "id":               { "type":"string" },
-            "timestamp":        { "type":"string","format":"date-time" },
-            "type":             { "type":"string","const":"deadend" },
-            "prompt":           { "type":"string" },
-            "suggestedActions": { "type":"array","items":{} }
-          },
-          "required":["id","timestamp","type","prompt","suggestedActions"]
-        }
-      },
-      {
-        "name": "post-tool-call_beat",
-        "description": "After a tool call: summarize result and suggest next steps.",
-        "parameters": {
-          "type":"object",
-          "properties": {
-            "sessionId":      { "type":"string" },
-            "messageId":      { "type":"string" },
-            "triggerContext": {
-              "type":"object",
-              "properties": {
-                "toolName":    { "type":"string" },
-                "resultCount": { "type":"integer" }
-              },
-              "required":["toolName","resultCount"]
-            },
-            "scratchSummary": {
-              "type":"object",
-              "description":"Summary of latest scratch entry for this toolName (optional)."
-            }
-          },
-          "required":["sessionId","messageId","triggerContext"]
-        },
-        "output": {
-          "type":"object",
-          "properties": {
-            "id":               { "type":"string" },
-            "timestamp":        { "type":"string","format":"date-time" },
-            "type":             { "type":"string","const":"refocus" },
-            "prompt":           { "type":"string" },
-            "suggestedActions": { "type":"array","items":{} }
-          },
-          "required":["id","timestamp","type","prompt","suggestedActions"]
-        }
-      }
-    ],
-  
-  
-
-
+  "beats": [],
   "providers": {
     "google-mail": {
       "endpoint": "gmail",
       "provider_config_key": "google-mail",
-      "connection_id": "e5bce133-e6df-4cb7-9fb1-ec1d48023079", 
+      "connection_id": "e5bce133-e6df-4cb7-9fb1-ec1d48023079",
       "objects": ["Message"]
     },
     "google-calendar": {
       "endpoint": "calendar",
       "provider_config_key": "google-calendar",
-      "connection_id": "30009351-89b2-4546-9367-bce987d6d79d", 
+      "connection_id": "30009351-89b2-4546-9367-bce987d6d79d",
       "objects": ["Calendar", "Event"]
     },
-    "salesforce": {
+    "salesforce-2": {
       "endpoint": "salesforce",
-      "provider_config_key": "salesforce-2", 
-      "connection_id": "2afdea8f-9c5a-4555-9e88-6c440e59c037", 
+      "provider_config_key": "salesforce-2",
+      "connection_id": "2afdea8f-9c5a-4555-9e88-6c440e59c037",
       "objects": ["Account", "Contact", "Lead", "Deal", "Article", "Case"]
     }
   }

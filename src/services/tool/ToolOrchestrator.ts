@@ -1,175 +1,159 @@
 // src/services/tool/ToolOrchestrator.ts
 
-import { BaseService } from '../base/BaseService'; // Assuming BaseService exists and provides logger
-import { ToolConfig, ToolCall } from './tool.types'; // Import your specific types
+import { BaseService } from '../base/BaseService';
+import { ToolCall } from './tool.types';
 import { NangoService } from '../NangoService';
 import { ToolResult } from '../conversation/types';
 import winston from 'winston';
-import * as ToolConfigManager from './ToolConfigManager'; // Needed for getProviderConfigKeyForTool
+import * as ToolConfigManager from './ToolConfigManager';
 import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '../../config';
+import Redis from 'ioredis';
+import { Run } from './run.types';
 
 const logger = winston.createLogger({
     level: 'info',
-    format: winston.format.combine(
-      winston.format.timestamp(),
-      winston.format.json()
-    ),
+    format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
     transports: [new winston.transports.Console()],
-  });
+});
 
-// Define or import the expected Nango response structure
+const redis = new Redis(CONFIG.REDIS_URL!);
+
 interface NangoActionResponse {
   success?: boolean;
   data?: any;
-  errors?: any[] | string | null;
-  message?: string;
   [key: string]: any;
 }
 
-// Define options type if BaseService constructor needs specific config fields
 interface OrchestratorConfig  {
     logger: winston.Logger;
     nangoService: NangoService;
-    toolConfigManager: ToolConfigManager.ToolConfigManager; // Inject ToolConfigManager,
-    // Add other fields if needed
+    toolConfigManager: ToolConfigManager.ToolConfigManager;
 }
 
 export class ToolOrchestrator extends BaseService {
-    // Remove activeTools map if not used for tracking/cancellation
-    // private activeTools: Map<string, ToolCall>;
     private nangoService: NangoService;
-    private toolConfigManager: ToolConfigManager.ToolConfigManager; // Store instance
+    private toolConfigManager: ToolConfigManager.ToolConfigManager;
 
-    constructor(config: OrchestratorConfig) {
-        super({ logger: config.logger, }); // Pass name and description
-        // this.activeTools = new Map();
+    constructor(config: any) {
+        super({ logger: config.logger });
         this.nangoService = config.nangoService;
-        this.toolConfigManager = config.toolConfigManager; // Store injected manager
-        logger.info("ToolOrchestrator initialized.");
+        this.toolConfigManager = config.toolConfigManager;
+        logger.info("ToolOrchestrator initialized to use Redis for connection lookups.");
     }
 
-    /**
-     * Executes a tool call, routes to Nango, maps the result.
-     */
     async executeTool(toolCall: ToolCall): Promise<ToolResult> {
-        const sessionId = toolCall.sessionId || 'unknown-session';
-        const executionId = toolCall.id || uuidv4(); // Use provided ID or generate one
+        const executionId = toolCall.id || uuidv4();
+        const { name: toolName } = toolCall;
+
+        // This service now assumes the tool call has been validated by a higher-level service
+        // like ActionLauncherService. Its only job is to execute.
+        this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
 
         try {
-            this.logger.info('Executing tool', { tool: toolCall.name, args: toolCall.arguments, sessionId, executionId });
-            // this.activeTools.set(sessionId, toolCall); // Removed tracking map
+            const nangoResult = await this.executeNangoActionDispatcher(toolCall);
+            
+            const isSuccess = (nangoResult as any).success === true || ((nangoResult as any).success === undefined && (nangoResult as any).data !== undefined);
 
-            // --- Call internal dispatcher ---
-            const nangoResult: NangoActionResponse = await this.executeNangoActionDispatcher(toolCall);
-            // --- End Nango Call ---
-
-            logger.debug(`Raw Nango response for ${toolCall.name}`, { executionId, response: nangoResult });
-
-            // --- Check Nango response success/failure ---
-            const isSuccess = nangoResult.success === true;
-            const errors = nangoResult.errors;
-            let errorMessage = nangoResult.message;
-            if (errors && ((Array.isArray(errors) && errors.length > 0) || typeof errors === 'string')) {
-                errorMessage = Array.isArray(errors) ? errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('; ') : errors;
-            }
-            // --- End Check ---
-
-            // --- Return Correct ToolResult ---
             if (isSuccess) {
-                this.logger.info(`Tool execution successful`, { tool: toolCall.name, executionId });
+                this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
                 return {
-                    status: 'success', toolName: toolCall.name,
-                    data: nangoResult.hasOwnProperty('data') ? nangoResult.data : nangoResult,
+                    status: 'success',
+                    toolName: toolName,
+                    data: (nangoResult as any).hasOwnProperty('data') ? (nangoResult as any).data : nangoResult,
                     error: ''
                 };
             } else {
-                this.logger.warn(`Tool execution failed according to Nango`, { tool: toolCall.name, executionId, nangoSuccess: nangoResult.success, errors: errors, message: nangoResult.message });
+                const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
+                this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
                 return {
-                    status: 'failed', toolName: toolCall.name, data: null,
-                    error: errorMessage || `Tool '${toolCall.name}' failed.`
+                    status: 'failed', toolName: toolName, data: null, error: errorMessage
                 };
             }
-            // --- End Return ---
-
         } catch (error: any) {
             logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
-            // this.activeTools.delete(sessionId); // Removed tracking map
             return {
-                status: 'failed', toolName: toolCall.name, data: null,
+                status: 'failed', toolName: toolName, data: null,
                 error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
             };
         }
-        // finally { // Optional cleanup if needed
-        //     this.activeTools.delete(sessionId);
-        // }
     }
 
+    // Add this function inside the ToolOrchestrator class in ToolOrchestrator.ts
+
     /**
-     * Internal function to map tool calls to specific NangoService methods.
-     * This is where the dispatch logic belongs.
+     * A patch to correct malformed 'fetch_entity' arguments from the LLM.
+     * It checks for arguments incorrectly nested under 'identifier.type'
+     * and flattens them to the correct top-level structure.
+     * @param args The raw arguments from the tool call.
+     * @returns A corrected, flat arguments object.
      */
-    private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<NangoActionResponse> {
-        const { name: toolName, arguments: args } = toolCall;
-        const { operation, entityType, identifier, fields, /* ... */ } = args;
+    private _normalizeFetchEntityArgs(args: Record<string, any>): Record<string, any> {
+        // Check for the specific malformed structure: an object inside 'identifier.type'
+        if (args.identifier && typeof args.identifier.type === 'object' && args.identifier.type !== null) {
+            
+            this.logger.warn('Malformed fetch_entity arguments detected. Applying normalization patch.', { originalArgs: args });
 
-        // --- Determine Provider Config Key & Connection ID ---
+            const nestedArgs = args.identifier.type;
 
-        // STEP 1: Get Nango Provider Config Key DIRECTLY using the Tool Name
-        // **** REVERTED TO DIRECT LOOKUP ****
+            // Create a new, flat object with the correct structure.
+            const newArgs = {
+                operation: nestedArgs.operation || 'fetch',
+                entityType: nestedArgs.entityType,
+                filters: nestedArgs.filters,
+                // Copy any other potential top-level fields that might be correct
+                ...args.fields
+            };
+            
+            this.logger.info('Arguments have been successfully normalized.', { newArgs });
+            return newArgs;
+        }
+
+        // If the structure is already correct, return the original arguments without change.
+        return args;
+    }
+
+     private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<NangoActionResponse> {
+        // --- FIX: This now correctly destructures our clean ToolCall object ---
+        const { name: toolName, arguments: args, sessionId, userId } = toolCall; 
+        
+        if (!sessionId || !userId) {
+            throw new Error(`Session or User ID is missing for tool '${toolName}'.`);
+        }
+
         const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
-        logger.debug(`Dispatcher: Looked up provider config key for tool '${toolName}': ${providerConfigKey}`);
         if (!providerConfigKey) {
-             // This error means toolName not found or its providerConfigKey is missing/invalid in JSON
-             logger.error(`Configuration error: Cannot find Nango provider config key for tool: ${toolName}`);
              throw new Error(`Configuration missing 'providerConfigKey' for tool: ${toolName}`);
         }
 
-        // STEP 2: Get Connection ID (Placeholder - Needs dynamic lookup passed from server.ts)
-        // *** This lookup MUST eventually be dynamic based on the providerConfigKey and user session ***
-        let connectionId: string | undefined;
-        if (providerConfigKey === 'salesforce-2') { // Example Mapping
-            connectionId = CONFIG.CONNECTION_ID; // Get specific ID
-        } else if (providerConfigKey === 'google-mail') {
-            connectionId = CONFIG.CONNECTION_ID; // Get specific ID
-        } else {
-             connectionId = CONFIG.CONNECTION_ID; // Fallback to generic? Less ideal.
-             logger.warn(`Using default NANGO_CONNECTION_ID for provider key ${providerConfigKey}`);
-        }
-        // const connectionId = CONFIG.NANGO_CONNECTION_ID; // Old placeholder
-
+        const connectionId = await redis.get(`active-connection:${userId}`);
         if (!connectionId) {
-             logger.error(`Connection ID could not be determined for provider key ${providerConfigKey}`);
-             throw new Error(`Connection ID could not be determined for provider key ${providerConfigKey}.`);
-         }
-        logger.debug(`Dispatcher: Using Connection ID: ${connectionId ? '***' : 'N/A'}`);
-        // --- End ID Lookup ---
+             throw new Error(`No active Nango connection found to execute tool '${toolName}'.`);
+        }
 
-        logger.info('Dispatching Nango action call', { tool: toolName, providerConfigKey });
-
-        // --- Switch on Tool Name ---
         switch (toolName) {
             case 'create_entity':
             case 'update_entity':
-            case 'fetch_entity':
-                 if (!operation || !entityType) throw new Error(`Missing op/entityType for ${toolName}`);
-                 // Pass the looked-up providerConfigKey and connectionId
+            case 'fetch_entity': {
+                 // --- FIX: Ensure we extract nested properties correctly ---
+                 const { operation, entityType, identifier, fields } = args;
+
+                 if (!operation || !entityType) {
+                    throw new Error(`Missing operation/entityType for ${toolName}`);
+                 }
                  return await this.nangoService.triggerSalesforceAction(
-                    providerConfigKey, connectionId, operation, entityType,
-                    identifier || fields || args, fields, args
-                );
-
-            case 'fetch_emails':
-                 // Pass the looked-up providerConfigKey and connectionId
-                return await this.nangoService.fetchEmails(
-                    providerConfigKey, args
-                );
-
-            // case 'send_email': ...
+        providerConfigKey, 
+        connectionId,
+        args 
+    );
+            }
 
             default:
-                throw new Error(`Unknown or unhandled tool: ${toolName}`);
+                throw new Error(`Unknown or unhandled tool in orchestrator: ${toolName}`);
         }
-
     }
 }
+
+
+
+

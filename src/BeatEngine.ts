@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { v4 as uuid } from 'uuid';
 import OpenAI from 'openai';
+import { CONFIG } from './config'; // Import CONFIG to get OpenAI API Key
 import { ToolConfigManager } from './services/tool/ToolConfigManager';
 import { BeatUIJSON } from './types/beats';
 
@@ -14,8 +15,7 @@ interface InvokeBeatContext {
 
 export class BeatEngine {
   private client = new OpenAI({
-    // Ensure OPENAI_API_KEY is set in your Cloud Run environment.
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: CONFIG.OPEN_AI_API_KEY, // Use API key from CONFIG
   });
   private multiBeatSystemPrompt = fs.readFileSync(
     __dirname + '/prompts/beatSystemPrompt.txt',
@@ -33,7 +33,7 @@ export class BeatEngine {
       .replace('{{mainToolSchemas}}', JSON.stringify(mainSchemas));
 
     const res = await this.client.chat.completions.create({
-      model: 'gpt-4.1-mini-2025-04-14',
+      model: 'gpt-4.1-nano-2025-04-14', // Use the specified model
       messages: [{ role: 'system', content: prompt }]
     });
 
@@ -58,7 +58,7 @@ export class BeatEngine {
       .replace('{{mainToolSchemas}}', JSON.stringify(mainSchemas));
 
     try {
-      const res = await this.client.chat.completions.create({
+      const res = await this.client.chat.completions.create({ // Use OpenAI client
         model: 'gpt-4.1-mini-2025-04-14', // Or your preferred model for single, focused tasks
         messages: [{ role: 'system', content: prompt }],
         // temperature: 0.5, // Adjust temperature for more deterministic output if needed

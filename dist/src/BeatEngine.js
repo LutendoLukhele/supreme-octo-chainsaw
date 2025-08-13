@@ -7,11 +7,11 @@ exports.BeatEngine = void 0;
 const fs_1 = __importDefault(require("fs"));
 const uuid_1 = require("uuid");
 const openai_1 = __importDefault(require("openai"));
+const config_1 = require("./config"); // Import CONFIG to get OpenAI API Key
 class BeatEngine {
     toolConfig;
     client = new openai_1.default({
-        // Ensure OPENAI_API_KEY is set in your Cloud Run environment.
-        apiKey: process.env.OPENAI_API_KEY,
+        apiKey: config_1.CONFIG.OPEN_AI_API_KEY, // Use API key from CONFIG
     });
     multiBeatSystemPrompt = fs_1.default.readFileSync(__dirname + '/prompts/beatSystemPrompt.txt', 'utf-8');
     constructor(toolConfig) {
@@ -25,7 +25,7 @@ class BeatEngine {
             .replace('{{context}}', JSON.stringify(context))
             .replace('{{mainToolSchemas}}', JSON.stringify(mainSchemas));
         const res = await this.client.chat.completions.create({
-            model: 'gpt-4.1-mini-2025-04-14',
+            model: 'gpt-4.1-nano-2025-04-14', // Use the specified model
             messages: [{ role: 'system', content: prompt }]
         });
         const raw = JSON.parse(res.choices[0].message.content || '[]');

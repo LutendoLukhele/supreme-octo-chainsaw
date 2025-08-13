@@ -4,8 +4,8 @@ import path from 'path';
 import winston from 'winston'; // Changed from namespace import to default import
 import { z } from 'zod';
 import { ToolConfig, ProviderConfig, EntityType } from './tool.types'; // Your existing types
-
-// --- Interfaces for internal schema structure ---
+import { DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE } from '../conversation/prompts/dedicatedPlannerPrompt';
+import { CONFIG } from '../../config'// --- Interfaces for internal schema structure ---
 export interface ToolParameterProperty {
     type: string | string[];
     description?: string;
@@ -70,88 +70,92 @@ const logger = winston.createLogger({
 // --- End Logger Setup ---
 
 
-export class ToolConfigManager {
-    getToolParametersSchema(intendedToolName: string) {
-        throw new Error('Method not implemented.');
-    }
-    private configFilePath: string;
-    private tools: Record<string, ToolConfig> = {};
-    private providers: Record<string, ProviderConfig> = {};
-    private toolMap: Map<string, ToolConfig> = new Map();
 
-    constructor(configFilePath: string) {
-        this.configFilePath = configFilePath || './src/config/tool-config.json'; // Ensure path is valid
+
+export class ToolConfigManager {
+    private configFilePath: string;
+    private toolMap: Map<string, ToolConfig> = new Map();
+    private providers: Record<string, ProviderConfig> = {};
+    // --- FIX 1: Use the correct type for the config object ---
+    private toolConfig!: ToolsConfigFile;
+
+    constructor() {
+        this.configFilePath = CONFIG.TOOL_CONFIG_PATH ;
         this.loadConfig();
     }
 
     private loadConfig(): void {
         try {
-            const fullPath = path.resolve(this.configFilePath);
-            logger.info(`Loading tool configuration from: ${fullPath}`);
-            if (!fs.existsSync(fullPath)) throw new Error(`Tool config file not found at ${fullPath}`);
-
-            const fileContent = fs.readFileSync(fullPath, 'utf-8');
-            const configData = JSON.parse(fileContent) as ToolsConfigFile;
-
-            if (!configData || !Array.isArray(configData.tools) || !configData.providers) {
-                throw new Error('Invalid configuration structure: tools array or providers missing.');
-            }
-
-            this.tools = {}; this.toolMap.clear();
-            configData.tools.forEach((tool: ToolConfig) => {
-                // Basic validation of tool structure before adding
-                if (!tool.name || !tool.description || !tool.parameters) {
-                   logger.warn("Skipping tool due to missing required fields (name, description, parameters)", { toolName: tool.name });
-                   return;
-                }
-                // Add further validation if necessary
-                this.tools[tool.name] = tool;
+            const configFile = fs.readFileSync(this.configFilePath, 'utf-8');
+            // By casting here, you ensure type safety for the loaded data
+            this.toolConfig = JSON.parse(configFile) as ToolsConfigFile;
+            
+            this.toolConfig.tools.forEach(tool => {
                 this.toolMap.set(tool.name, tool);
             });
+            this.providers = this.toolConfig.providers;
+            
+            logger.info('Tool configuration loaded successfully.', {
+                toolCount: this.toolMap.size,
+                providerCount: Object.keys(this.providers).length
+            });
 
-            // Add meta-tool definition programmatically
-            const metaToolName = "request_missing_parameters";
-            if (!this.tools[metaToolName]) {
-                 const metaTool: ToolConfig = {
-                     name: metaToolName,
-                     description: "Use this tool ONLY when required parameters for another tool are missing...",
-                     parameters: {
-                         type: "object",
-                         properties: {
-                             input: {
-                                 type: "object",
-                                 properties: {
-                                     intended_tool_name: { type: "string", description: "The intended tool name." },
-                                     missing_params: { type: "array", items: { type: "string" }, description: "REQUIRED missing parameter names." },
-                                     clarification_question: { type: "string", description: "Question to ask the user." }
-                                 },
-                                 required: ["intended_tool_name", "missing_params", "clarification_question"]
-                             }
-                         },
-                         required: ["input"]
-                     },
-                     // Add other REQUIRED fields from ToolConfig if any (e.g., input/output schemas might be optional)
-                     // If input/output are required in ToolConfig, provide placeholder/empty schemas
-                     input: {},
-                     nangoService: undefined,
-                     default_params: {},
-                     providerConfigKey: ''
-                 };
-                 this.tools[metaToolName] = metaTool;
-                 this.toolMap.set(metaToolName, metaTool);
-                 logger.info(`Added meta-tool '${metaToolName}' definition.`);
-            }
-
-            this.providers = configData.providers;
-            logger.info(`ToolConfigManager loaded ${Object.keys(this.tools).length} tools.`);
-
-        } catch (error: any) {
-            logger.error(`Error loading/parsing tool configuration: ${error.message}`, { path: this.configFilePath });
-            throw new Error(`Failed to initialize ToolConfigManager: ${error.message}`);
+        } catch (error) {
+            console.error('Failed to load tool-config.json:', error);
+            this.toolConfig = { tools: [], providers: {} };
         }
     }
 
-    // --- Tool Accessors ---
+    // --- FIX 2: Implement the method correctly ---
+   public getToolInputSchema(toolName: string): ToolInputSchema | undefined {
+        const tool = this.getToolDefinition(toolName);
+        if (!tool || !tool.parameters) {
+            return undefined;
+        }
+
+        // The schema for ALL tools is now directly in the 'parameters' property.
+        // We no longer need to check for a nested 'input' object.
+        return tool.parameters as ToolInputSchema;
+    }
+
+    // Now, any other method can safely use this.toolConfig
+  
+
+    // --- START: NEW METHOD FOR STRATEGY 2.5 ---
+    /**
+     * Retrieves tools based on a list of categories.
+     * Always includes tools from the 'Meta' category for essential functions like asking for missing parameters.
+     * @param categories An array of category names to include.
+     * @returns A filtered array of ToolConfig objects.
+     */
+   
+    // --- END: NEW METHOD FOR STRATEGY 2.5 ---
+
+
+    
+
+    // --- IMPLEMENTED: This method provides robust validation for the ActionLauncherService ---
+    public findMissingRequiredParams(toolName: string, parsedArgs: Record<string, any>): string[] {
+        const inputSchema = this.getToolInputSchema(toolName);
+        if (!inputSchema || !inputSchema.required) {
+            return []; // No required parameters to check.
+        }
+
+        
+
+        const missingParams: string[] = [];
+        for (const paramName of inputSchema.required) {
+            const value = parsedArgs[paramName];
+            const isMissing = value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+            if (isMissing) {
+                missingParams.push(paramName);
+            }
+        }
+        return missingParams;
+
+    }
+
+
     public getToolConfig(toolName: string): ToolConfig {
         const tool = this.toolMap.get(toolName);
         if (!tool) throw new Error(`Tool '${toolName}' not found.`);
@@ -159,18 +163,25 @@ export class ToolConfigManager {
     }
 
     public getAllTools(): ToolConfig[] {
+        if (!this.toolMap) {
+            logger.error("getAllTools called before toolMap was initialized.");
+            return []; // Return an empty array to prevent a crash
+        }
         return Array.from(this.toolMap.values());
     }
 
     // --- Schema and Parameter Accessors ---
-    public getToolInputSchema(toolName: string): ToolInputSchema | undefined {
-         const tool = this.getToolDefinition(toolName); // Use existing getter
-         const params = tool?.parameters as ToolTopLevelParameters | undefined;
-         return params?.properties?.input;
-    }
+
 
     public getToolDefinition(toolName: string): ToolConfig | undefined { // Return ToolConfig type
         return this.toolMap.get(toolName);
+    }
+
+    
+
+    public getToolDisplayName(toolName: string): string | undefined {
+        const tool = this.getToolDefinition(toolName);
+        return (tool as any)?.display_name || tool?.name.replace(/_/g, ' '); // Fallback to formatted name
     }
 
     public getToolParameterProperty(toolName: string, paramName: string): ToolParameterProperty | undefined {
@@ -193,20 +204,6 @@ export class ToolConfigManager {
     }
 
     // --- Validation ---
-    public findMissingRequiredParams(toolName: string, parsedArgs: Record<string, any>): string[] {
-        const inputSchema = this.getToolInputSchema(toolName);
-        const requiredParams = inputSchema?.required || [];
-        const missingThatNeedInput: string[] = [];
-         for (const paramName of requiredParams) {
-             const value = parsedArgs[paramName];
-             const isMissingValue = value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
-             if (isMissingValue && !this.canParameterBeDefaulted(toolName, paramName)) {
-                 missingThatNeedInput.push(paramName);
-             }
-         }
-         if (missingThatNeedInput.length > 0) logger.warn(`Validation: Missing required params for ${toolName}`, { missingThatNeedInput });
-         return missingThatNeedInput;
-    }
 
 
 
@@ -247,6 +244,30 @@ export class ToolConfigManager {
         return missing;
     }
 
+    // Method to get tool definitions suitable for the planner prompt
+    public getToolDefinitionsForPlanner(): ToolConfig[] {
+        // ONLY include the core entity manipulation tools for the planner.
+        // The planner's job is to decide which of these to use and with what arguments (like filters).
+        const plannerSpecificTools = ['fetch_entity', 'create_entity', 'update_entity'];
+        const allTools = this.getAllTools();
+        const filteredTools = allTools.filter(tool => plannerSpecificTools.includes(tool.name));
+        logger.debug(`Tools selected for planner: ${filteredTools.map(t => t.name).join(', ')}`);
+        return filteredTools;
+    }
+    // Helper to get the planner system prompt content
+    public getPlannerSystemPrompt(userInput: string, identifiedToolCalls: { name: string; arguments: Record<string, any>; id?: string }[]): string {
+        const availableTools = this.getToolDefinitionsForPlanner();
+        const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
+
+        let identifiedToolsPromptSection = "No tools pre-identified.";
+        if (identifiedToolCalls.length > 0) {
+            identifiedToolsPromptSection = "The following tool calls were preliminarily identified (you should verify and integrate them into a coherent plan):\n";
+            identifiedToolCalls.forEach(tc => {
+                identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
+            });
+        }
+        return DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE.replace('{{USER_CURRENT_MESSAGE}}', userInput).replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson).replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+    }
      // Zod validation (Keep if needed)
      public validateToolArgsWithZod(toolName: string, args: Record<string, any>): Record<string, any> {
         logger.info(`Validating args with Zod for ${toolName}`, { args });
@@ -269,6 +290,14 @@ export class ToolConfigManager {
                 throw new Error(`Validation failed for tool '${toolName}': ${error.message}`);
             }
         }
+    }
+
+    public getToolsByCategories(categories: string[]): ToolConfig[] {
+        const allTools = this.getAllTools();
+        return allTools.filter(tool => {
+            const toolCategory = (tool as any).category;
+            return toolCategory === 'Meta' || categories.includes(toolCategory);
+        });
     }
 
     // Helper function to create Zod schema for a single property

@@ -9,10 +9,12 @@
       "esModuleInterop": true,
       "skipLibCheck": true,
       "forceConsistentCasingInFileNames": true,
-      "baseUrl": ".",
+      "baseUrl": "./",
       "paths": {
         "@services/*": ["./services/*"],
-        "@types/*": ["./types/*"]
+        "@types/*": ["./types/*"],
+        "@/*": ["src/*"]
+        
       }
     },
     "include": [

@@ -4,212 +4,178 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ActionLauncherService = void 0;
+const events_1 = require("events");
 const uuid_1 = require("uuid");
 const winston_1 = __importDefault(require("winston"));
-const config_1 = require("./config");
+const lodash_1 = require("lodash");
 const logger = winston_1.default.createLogger({
     level: 'info',
     format: winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.json()),
     transports: [new winston_1.default.transports.Console()],
 });
-class ActionLauncherService {
+class ActionLauncherService extends events_1.EventEmitter {
     conversationService;
     toolConfigManager;
     beatEngine;
     scratchPadService;
     activeActions = new Map();
-    // BeatEngine is injected
-    constructor(conversationService, toolConfigManager, beatEngine, scratchPadService // Injected ScratchPadService
-    ) {
+    constructor(conversationService, toolConfigManager, beatEngine, scratchPadService) {
+        super();
         this.conversationService = conversationService;
         this.toolConfigManager = toolConfigManager;
         this.beatEngine = beatEngine;
         this.scratchPadService = scratchPadService;
         logger.info("ActionLauncherService initialized.");
     }
-    createLauncherResponseForParameterRequest(intendedToolName, missingParamsList, clarificationQuestion, sessionId, // Session ID
-    originalUserMessageId // ID of the user's message that led to this
-    ) {
-        logger.info(`Creating ActionLauncher response from LLM's 'request_missing_parameters' call`, { sessionId, originalUserMessageId, intendedToolName });
-        const actionId = (0, uuid_1.v4)(); // Generate a unique ID for this parameter collection action
-        const toolSchema = this.toolConfigManager.getToolInputSchema(intendedToolName); // Use getToolInputSchema
-        let parameters = [];
-        let validatedMissingParams = [];
-        if (toolSchema?.properties) {
-            parameters = Object.entries(toolSchema.properties).map(([name, prop]) => {
-                // Safely access properties
-                const propDesc = prop.prompt ?? prop.description ?? name; // Prefer prompt for UI
-                const propType = Array.isArray(prop.type) ? prop.type.join('|') : (prop.type || 'string');
-                const propRequired = toolSchema.required?.includes(name) ?? false; // Use required from inputSchema
-                return { name: name, description: propDesc, required: propRequired, type: propType, currentValue: undefined, hint: prop.hint };
-            });
-            validatedMissingParams = parameters
-                .filter(p => p.required && missingParamsList.includes(p.name))
-                .map(p => p.name);
-        }
-        else {
-            parameters = missingParamsList.map(name => ({ name: name, description: `Missing: ${name}`, required: true, type: 'string', currentValue: undefined }));
-            validatedMissingParams = missingParamsList;
-            logger.warn("No input schema found for intended tool when creating response for parameter request", { intendedToolName, sessionId });
-        }
-        if (validatedMissingParams.length === 0) {
-            logger.warn("LLM requested parameters but no validated required params missing!", { intendedToolName, sessionId, originalUserMessageId });
-            // This case should ideally not happen if the LLM follows instructions.
-            // We could return an empty action list or an error/clarification.
-            return { actions: [], analysis: "It seems I have all the information I need. What would you like to do next?", isVagueQuery: false, messageId: originalUserMessageId };
-        }
-        const action = this._createAndStoreAction({
-            sessionId, messageId: originalUserMessageId, // Use originalUserMessageId
-            actionId: actionId, // Pass the generated actionId
-            actionVerb: "execute", objectNoun: intendedToolName,
-            toolName: intendedToolName, description: clarificationQuestion,
-            parameters: parameters, missingParameters: validatedMissingParams,
-            initialStatus: 'collecting_parameters',
-        });
-        // This response is what the client will receive.
-        // It should match the structure your client expects for 'parameter_collection_required'.
-        // The 'action' object created above is already in the LaunchableAction format.
-        return {
-            actions: [action],
-            analysis: clarificationQuestion,
-            isVagueQuery: false, // Or determine this based on context
-            messageId: originalUserMessageId // The ID of the user's message that triggered this
-        };
-    }
-    // This method is called when the server itself (not the LLM) detects missing parameters
-    // after an LLM tool call attempt.
-    async initiateServerSideParameterCollection(sessionId, userId, // Assuming userId is available
-    originalUserMessageId, intendedToolName, allMissingParams, llmProvidedArgs // Arguments LLM tried to use
-    ) {
-        logger.info(`Server initiating parameter collection for ${intendedToolName}. Missing: ${allMissingParams.join(', ')}`, { sessionId });
-        const parameterCollectionActionId = (0, uuid_1.v4)(); // Unique ID for this collection step
-        const messagesToSend = [];
-        // 1. Prepare PENDING_PARAMETER_COLLECTION message
-        messagesToSend.push({
-            type: "PENDING_PARAMETER_COLLECTION",
-            payload: {
-                actionId: parameterCollectionActionId,
-                messageId: originalUserMessageId, // ID of the user's message
-                intendedToolName: intendedToolName,
-                missingParamsHint: allMissingParams
-            },
-            // No specific messageId for this system message, client handles correlation via actionId
-        });
-        // 2. Invoke pre-tool-call_beat to get the clarification question
-        let clarificationQuestion = `I need a bit more information for the '${intendedToolName.replace(/_/g, ' ')}' action. Specifically, I'm missing: ${allMissingParams.join(', ')}. Can you provide these?`; // Default
-        try {
-            // Assume invokeBeat might be mistyped as returning Promise<void>
-            // but can actually return an object with a prompt or undefined.
-            // We use a type assertion to guide TypeScript.
-            const beatResponse = await this.beatEngine.invokeBeat('pre-tool-call_beat', {
-                sessionId,
-                messageId: originalUserMessageId,
-                intendedToolName: intendedToolName,
-                missingParams: allMissingParams
-            });
-            if (beatResponse && typeof beatResponse.prompt === 'string' && beatResponse.prompt.trim() !== '') {
-                clarificationQuestion = beatResponse.prompt;
-            }
-            else if (beatResponse) {
-                logger.warn(`pre-tool-call_beat for ${intendedToolName} returned a response but no valid prompt.`, { beatResponse, sessionId });
-            }
-        }
-        catch (beatError) {
-            logger.error(`Error invoking pre-tool-call_beat for ${intendedToolName}`, { error: beatError.message || beatError, sessionId });
-        }
-        // 3. Prepare parameters for the client, including current values if LLM provided some
-        const toolSchema = this.toolConfigManager.getToolInputSchema(intendedToolName);
-        let clientParameters = [];
-        if (toolSchema?.properties) {
-            clientParameters = Object.entries(toolSchema.properties).
-                map(([name, prop]) => {
-                const propDesc = prop.prompt ?? prop.description ?? name;
-                const propType = Array.isArray(prop.type) ? prop.type.join('|') : (prop.type || 'string');
-                const propRequired = toolSchema.required?.includes(name) ?? false;
-                return {
-                    name: name,
-                    description: propDesc,
-                    required: propRequired,
-                    type: propType,
-                    currentValue: llmProvidedArgs[name], // Pre-fill with what LLM provided
-                    hint: prop.hint
-                };
-            });
-        }
-        else {
-            clientParameters = allMissingParams.map(name => ({
-                name: name, description: `Missing: ${name}`, required: true, type: 'string',
-                currentValue: llmProvidedArgs[name], hint: undefined
-            }));
-            logger.warn("No input schema found for intended tool during server-side param collection", { intendedToolName, sessionId });
-        }
-        // Create and store the action state on the server
-        const actionForClient = this._createAndStoreAction({
-            sessionId,
-            messageId: originalUserMessageId,
-            actionId: parameterCollectionActionId, // Use the same actionId
-            actionVerb: "execute", // Or "collect_parameters" if you have a specific verb
-            objectNoun: intendedToolName,
-            toolName: intendedToolName,
-            description: clarificationQuestion,
-            parameters: clientParameters,
-            missingParameters: allMissingParams,
-            initialStatus: 'collecting_parameters',
-        });
-        // 4. Send the actual parameter collection request to the client
-        // Prepare the 'parameter_collection_required' message
-        messagesToSend.push({
-            type: "parameter_collection_required", // Match client expectation
-            content: {
-                // to create an ActionParameterInfo object.
-                // The 'actionForClient' created above is a LaunchableAction.
-                // Your client might expect a list of actions, even if it's just one.
-                actions: [actionForClient], // Send it as a list
-                analysis: clarificationQuestion,
-                isVagueQuery: false, // Or determine this
-                messageId: originalUserMessageId // ID of the user's message
-            },
-            messageId: originalUserMessageId // Associate with the original user message
-        });
-        return messagesToSend;
-    }
-    createLauncherResponseForIncompleteTools(invalidCallsInfo, analysisText, sessionId, messageId) {
-        logger.info(`Creating ActionLauncher response for ${invalidCallsInfo.length} incomplete calls`, { sessionId, messageId });
-        const actions = invalidCallsInfo.map(info => {
-            const actionId = (0, uuid_1.v4)();
-            const toolName = info.originalToolCall.function.name;
-            const schema = info.toolSchema; // Cast schema if passed from validation
-            let parameters = [];
-            const validatedMissingParams = info.missingParams;
-            if (schema?.properties) {
-                parameters = Object.entries(schema.properties).map(([name, prop]) => {
-                    const propDesc = prop.prompt ?? prop.description ?? name;
-                    const propType = Array.isArray(prop.type) ? prop.type.join('|') : (prop.type || 'string');
-                    const propRequired = schema.required?.includes(name) ?? false;
-                    return { name: name, description: propDesc, required: propRequired, type: propType, currentValue: undefined, hint: prop.hint };
+    /**
+     * Resolves placeholder strings in an argument object (e.g., {{step_1.result.id}})
+     * with actual data from a completed step in the current run.
+     * @param args The arguments object to resolve.
+     * @param run The active Run object containing results from previous steps.
+     * @returns A new arguments object with placeholders replaced by real data.
+     */
+    _resolvePlaceholders(args, run) {
+        const resolvedArgs = JSON.parse(JSON.stringify(args)); // Deep copy
+        const placeholderRegex = /\{\{([^}]+)\}\}/g;
+        for (const key in resolvedArgs) {
+            const value = resolvedArgs[key];
+            if (typeof value === 'string' && placeholderRegex.test(value)) {
+                const newStr = value.replace(placeholderRegex, (match, placeholder) => {
+                    const [actionId, ...pathParts] = placeholder.split('.');
+                    if (!actionId || pathParts.length === 0)
+                        return match;
+                    const path = pathParts.join('.');
+                    const toolExecution = run.tools.find(t => t.toolCall.id === actionId);
+                    const toolResult = toolExecution?.result;
+                    if (toolResult === undefined) {
+                        logger.warn(`Could not resolve placeholder: Action ID '${actionId}' not found or has no result yet.`, { placeholder });
+                        return match;
+                    }
+                    const resolvedValue = (0, lodash_1.get)(toolResult, path);
+                    return resolvedValue !== undefined ? JSON.stringify(resolvedValue) : match;
                 });
+                try {
+                    resolvedArgs[key] = JSON.parse(newStr);
+                }
+                catch (e) {
+                    resolvedArgs[key] = newStr.replace(/^"|"$/g, '');
+                }
             }
-            else {
-                parameters = validatedMissingParams.map(name => ({ name: name, description: `Missing: ${name}`, required: true, type: 'string', currentValue: undefined, hint: undefined }));
-                logger.warn("No schema info provided for incomplete tool, creating params from missing list", { toolName, sessionId });
-            }
-            let parsedArgs = {};
-            try {
-                if (info.originalToolCall.function.arguments)
-                    parsedArgs = JSON.parse(info.originalToolCall.function.arguments);
-            }
-            catch { }
-            parameters.forEach(p => { if (parsedArgs.hasOwnProperty(p.name))
-                p.currentValue = parsedArgs[p.name]; });
-            const description = `Action '${toolName}' requires input for: ${validatedMissingParams.join(', ')}.`;
-            return this._createAndStoreAction({
-                sessionId, messageId, actionId, actionVerb: "execute", objectNoun: toolName, toolName,
-                description, parameters, missingParameters: validatedMissingParams,
-                initialStatus: 'collecting_parameters',
-            });
-        }).filter((a) => a !== null);
-        return { actions: actions, analysis: analysisText, isVagueQuery: false, messageId: messageId };
+        }
+        return resolvedArgs;
     }
+    /**
+     * Processes a structured plan from the PlannerService. It validates each step,
+     * resolves data dependencies, and emits the appropriate messages to the client
+     * for either parameter collection or action confirmation.
+     * @param actionPlan The plan generated by the PlannerService.
+     * @param sessionId The current user session ID.
+     * @param userId The current user ID.
+     * @param messageId The ID of the message that initiated the plan.
+     * @param activeRun The active Run object containing state from previous steps.
+     */
+    async processActionPlan(actionPlan, sessionId, userId, messageId, activeRun) {
+        logger.info(`Processing action plan for session ${sessionId}.`, { numItems: actionPlan.length });
+        const clientActionsToConfirm = [];
+        const clientActionsNeedingParams = [];
+        for (const planItem of actionPlan) {
+            const toolName = planItem.tool;
+            let actualToolArgs = planItem.arguments || {};
+            if (activeRun) {
+                actualToolArgs = this._resolvePlaceholders(actualToolArgs, activeRun);
+            }
+            const missingRequired = this.toolConfigManager.findMissingRequiredParams(toolName, actualToolArgs);
+            const missingConditional = this.toolConfigManager.findConditionallyMissingParams(toolName, actualToolArgs);
+            const serverSideMissingParams = [...new Set([...missingRequired, ...missingConditional])];
+            const serverDeterminedStatus = serverSideMissingParams.length > 0 ? 'collecting_parameters' : 'ready';
+            const newActiveAction = this._createAndStoreAction({
+                sessionId, messageId,
+                actionId: planItem.id || (0, uuid_1.v4)(),
+                toolName: toolName,
+                description: planItem.intent,
+                llmToolCallId: planItem.id,
+                args: actualToolArgs,
+                missingParameters: serverSideMissingParams,
+                initialStatus: serverDeterminedStatus,
+            });
+            if (serverDeterminedStatus === 'collecting_parameters') {
+                clientActionsNeedingParams.push(newActiveAction);
+            }
+            else if (serverDeterminedStatus === 'ready') {
+                clientActionsToConfirm.push(newActiveAction);
+            }
+        }
+        if (clientActionsNeedingParams.length > 0) {
+            const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;
+            this.emit('send_chunk', sessionId, {
+                type: 'parameter_collection_required',
+                content: { actions: clientActionsNeedingParams, analysis: analysisText, messageId },
+            });
+        }
+        if (clientActionsToConfirm.length > 0) {
+            const analysisText = `The '${clientActionsToConfirm[0].toolDisplayName}' action is ready. Please review and confirm.`;
+            this.emit('send_chunk', sessionId, {
+                type: 'action_confirmation_required',
+                content: { actions: clientActionsToConfirm, analysis: analysisText, messageId },
+            });
+        }
+    }
+    /**
+     * Executes a single, validated action. This is called by the main server
+     * after receiving an 'execute_action' message from the client.
+     * @param sessionId The current user session ID.
+     * @param userId The current user ID.
+     * @param payload The action details from the client.
+     * @param toolOrchestrator The service responsible for the final execution.
+     * @returns The action object, updated with the result of the execution.
+     */
+    async executeAction(sessionId, userId, payload, toolOrchestrator) {
+        const { actionId } = payload;
+        logger.info('Executing action via launcher', { sessionId, actionId });
+        const action = this.getAction(sessionId, actionId);
+        if (!action)
+            throw new Error(`Action ${actionId} not found`);
+        if (action.status !== 'ready')
+            throw new Error(`Action '${action.toolName}' not ready`);
+        const args = {};
+        action.parameters.forEach((param) => {
+            if (param.currentValue !== undefined) {
+                args[param.name] = param.currentValue;
+            }
+        });
+        action.status = 'executing';
+        try {
+            const toolCall = {
+                name: action.toolName,
+                arguments: args,
+                sessionId: sessionId,
+                id: action.id, // Use the action's ID for the toolCall ID to link results
+                userId: userId,
+                ToolName: '',
+                args: {},
+                result: []
+            };
+            const result = await toolOrchestrator.executeTool(toolCall);
+            action.result = result.data;
+            action.status = result.status === 'success' ? 'completed' : 'failed';
+            action.error = result.status === 'failed' ? result.error : undefined;
+            if (action.status === 'completed' && result.data) {
+                this.scratchPadService.addToolResult(sessionId, action.toolName, args, result.data, toolCall.id);
+            }
+            return action;
+        }
+        catch (error) {
+            action.status = 'failed';
+            action.error = error instanceof Error ? error.message : String(error);
+            throw error;
+        }
+    }
+    /**
+     * Updates a parameter's value for an active action based on user input from the client.
+     * @param sessionId The current user session ID.
+     * @param payload The details of the parameter to update.
+     * @returns The updated action object or null if not found.
+     */
     updateParameterValue(sessionId, payload) {
         const { actionId, paramName, value } = payload;
         logger.info('Updating parameter value', { sessionId, actionId, paramName });
@@ -227,125 +193,71 @@ class ActionLauncherService {
         const missingIndex = action.missingParameters.indexOf(paramName);
         const isRequired = action.parameters[paramIndex].required;
         const hasValue = value !== null && value !== undefined && String(value).trim() !== '';
-        if (isRequired && hasValue && missingIndex >= 0)
+        if (isRequired && hasValue && missingIndex >= 0) {
             action.missingParameters.splice(missingIndex, 1);
-        else if (isRequired && !hasValue && missingIndex < 0)
+        }
+        else if (isRequired && !hasValue && missingIndex < 0) {
             action.missingParameters.push(paramName);
-        const stillMissingRequired = action.parameters.some(p => p.required && action.missingParameters.includes(p.name));
+        }
+        const stillMissingRequired = action.missingParameters.length > 0;
         action.status = stillMissingRequired ? 'collecting_parameters' : 'ready';
-        logger.info(`Action status updated`, { sessionId, actionId, newStatus: action.status });
+        // --- FIX: Use the correct 'action' variable ---
+        if (!stillMissingRequired && action.status === 'ready') {
+            logger.info(`Action ${actionId} is now ready after parameter update. Emitting 'action_ready_for_confirmation'.`, { sessionId, actionId });
+            this.emit('action_ready_for_confirmation', { sessionId, actionId, messageId: action.messageId });
+        }
         return action;
     }
-    async executeAction(sessionId, payload, toolOrchestrator) {
-        const { actionId } = payload;
-        logger.info('Executing action via launcher', { sessionId, actionId });
-        const action = this.getAction(sessionId, actionId);
-        if (!action)
-            throw new Error(`Action ${actionId} not found`);
-        if (action.status !== 'ready')
-            throw new Error(`Action '${action.toolName}' not ready`);
-        const args = {};
-        let conversionError = false;
-        action.parameters.forEach(param => {
-            if (param.currentValue !== undefined && param.currentValue !== null) {
-                let value = param.currentValue;
-                if (param.type === 'number' && typeof value !== 'number')
-                    value = Number(value);
-                if (param.type === 'boolean' && typeof value !== 'boolean')
-                    value = ['true', '1', 'yes'].includes(String(value).toLowerCase());
-                if (isNaN(value) && param.type === 'number') {
-                    conversionError = true;
-                }
-                args[param.name] = value;
-            }
-        });
-        if (conversionError)
-            throw new Error("Parameter type conversion failed.");
-        logger.info(`Executing tool '${action.toolName}' with args`, { sessionId, actionId, args });
-        action.status = 'executing';
-        try {
-            const nangoConnectionId = config_1.CONFIG.CONNECTION_ID; // Use correct config key
-            if (!nangoConnectionId)
-                throw new Error("Server config error: Nango ID missing.");
-            // Explicitly define the options object matching ToolCall
-            const toolOptions = {
-                name: action.toolName,
-                arguments: args, // Pass the parsed arguments
-                sessionId: sessionId,
-                id: (0, uuid_1.v4)(), // New execution ID for this specific call
-                ToolName: '',
-                args: {},
-                result: {},
-            };
-            // @ts-ignore
-            const result = await toolOrchestrator.executeTool(toolOptions); // Pass the typed options
-            action.result = result;
-            action.status = result.status === 'success' ? 'completed' : 'failed';
-            action.error = result.status === 'failed' ? result.error : undefined;
-            logger.info(`Action execution finished`, { sessionId, actionId, finalStatus: action.status });
-            // Add successful tool results to scratch pad
-            if (action.status === 'completed' && result.data) {
-                this.scratchPadService.addToolResult(sessionId, action.toolName, args, result.data, // Assuming result.data contains the primary output of the tool
-                toolOptions.id // The unique ID of this tool execution
-                );
-            }
-            return action;
-        }
-        catch (error) {
-            logger.error('ToolOrchestrator execution failed', { error: error.message, sessionId, actionId });
-            action.status = 'failed';
-            action.error = error instanceof Error ? error.message : String(error);
-            action.result = null;
-            throw error;
-        }
-    }
-    getActiveActions(sessionId) {
-        const sessionActionMap = this.activeActions.get(sessionId);
-        return sessionActionMap ? Array.from(sessionActionMap.values()) : []; // Added return
-    }
+    /**
+     * Retrieves a single active action by its ID.
+     * @param sessionId The current user session ID.
+     * @param actionId The ID of the action to retrieve.
+     * @returns The action object or null if not found.
+     */
     getAction(sessionId, actionId) {
-        return this.activeActions.get(sessionId)?.get(actionId) || null; // Added return
+        return this.activeActions.get(sessionId)?.get(actionId) || null;
     }
-    clearActions(sessionId) {
-        this.activeActions.delete(sessionId); // Added implementation
-        logger.info('Cleared actions for session', { sessionId });
-    }
-    // Implemented clearAllActions
-    clearAllActions() {
-        this.activeActions.clear();
-        logger.info("Cleared all active actions for all sessions.");
-    }
-    findMessageIdForAction(sessionId, actionId) {
-        const action = this.getAction(sessionId, actionId);
-        return action?.messageId; // Added return
-    }
-    // --- Private Helpers ---
-    // Define the type for the 'details' parameter inline or import if defined elsewhere
+    /**
+     * Creates and stores an ActiveAction object in the service's state.
+     * @param details The properties of the action to create.
+     * @returns The newly created ActiveAction object.
+     */
     _createAndStoreAction(details) {
-        // const actionId = uuidv4(); // REMOVE THIS: Use details.actionId passed in
-        const colorMap = { /* ... */};
-        const iconMap = { /* ... */};
-        const newAction = {
-            id: details.actionId, // Use the provided actionId
-            action: details.actionVerb, object: details.objectNoun, toolName: details.toolName,
-            description: details.description, parameters: details.parameters,
-            missingParameters: details.missingParameters, status: details.initialStatus,
+        const toolSchema = this.toolConfigManager.getToolInputSchema(details.toolName);
+        let parameterDefinitions = [];
+        if (toolSchema?.properties) {
+            parameterDefinitions = Object.entries(toolSchema.properties).map(([name, prop]) => ({
+                name,
+                description: prop.prompt ?? prop.description ?? name,
+                required: toolSchema.required?.includes(name) ?? false,
+                type: Array.isArray(prop.type) ? prop.type.join('|') : (prop.type || 'string'),
+                currentValue: details.args[name],
+                hint: prop.hint,
+                enumValues: prop.enum,
+            }));
+        }
+        const newActiveAction = {
+            id: details.actionId,
+            llmToolCallId: details.llmToolCallId,
             messageId: details.messageId,
-            bgColor: colorMap[details.actionVerb.toLowerCase()] || '#9E9E9E',
-            icon: iconMap[details.toolName] || 'help_outline',
-            result: null, error: undefined
+            action: "execute",
+            object: details.toolName,
+            toolName: details.toolName,
+            toolDisplayName: this.toolConfigManager.getToolDisplayName(details.toolName) || details.toolName.replace(/_/g, ' '),
+            description: details.description,
+            parameters: parameterDefinitions,
+            missingParameters: details.missingParameters,
+            status: details.initialStatus,
+            result: null,
+            error: undefined,
         };
         let sessionActionMap = this.activeActions.get(details.sessionId);
         if (!sessionActionMap) {
             sessionActionMap = new Map();
             this.activeActions.set(details.sessionId, sessionActionMap);
         }
-        sessionActionMap.set(details.actionId, newAction); // Store using the passed-in actionId
-        logger.info(`Stored new action`, { sessionId: details.sessionId, actionId: details.actionId, toolName: details.toolName });
-        return newAction; // Added return
+        sessionActionMap.set(details.actionId, newActiveAction);
+        return newActiveAction;
     }
-    // Optional: Keep these if analyzeQuery is ever used as a fallback
-    _parseAndValidateAnalysisResponse(content) { /* ... Implementation ... */ return { actions: [], analysis: '', isVagueQuery: true }; } // Placeholder return
-    _enhanceAndInitializeActions(response, sessionId) { /* ... Implementation ... */ return response; } // Placeholder return
 }
 exports.ActionLauncherService = ActionLauncherService;

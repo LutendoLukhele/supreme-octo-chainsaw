@@ -6,9 +6,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handleChatMessage = handleChatMessage;
 exports.recordAiResponseAndToolCalls = recordAiResponseAndToolCalls;
+exports.recordToolCallIntent = recordToolCallIntent;
 exports.updateToolCallResult = updateToolCallResult;
 exports.recordFollowUpResponse = recordFollowUpResponse;
-const database_1 = require("firebase/database");
 const winston_1 = __importDefault(require("winston"));
 const firebase_1 = require("../firebase"); // Ensure path to initialized RTDB is correct
 // Configure logger (Unchanged)
@@ -34,8 +34,8 @@ sessionId, userMessage) {
         throw new Error(errorMsg);
     }
     // 1. Save user message under chats/{userId}/{sessionId}/messages
-    const messagesRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/messages`);
-    const userMessageRef = (0, database_1.push)(messagesRef);
+    const messagesRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/messages`);
+    const userMessageRef = messagesRef.push();
     const messageId = userMessageRef.key;
     if (!messageId) {
         const errorMsg = 'Failed to generate message ID';
@@ -44,7 +44,7 @@ sessionId, userMessage) {
     }
     logger.info(`Generated messageId: ${messageId}`, { userId, sessionId });
     try {
-        await (0, database_1.set)(userMessageRef, {
+        await userMessageRef.set({
             content: userMessage,
             sender: 'user',
             type: 'text',
@@ -58,9 +58,9 @@ sessionId, userMessage) {
         throw error;
     }
     // 2. Create initial AI response structure under chats/{userId}/{sessionId}/aiResponses
-    const aiResponseRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+    const aiResponseRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
     try {
-        await (0, database_1.set)(aiResponseRef, {
+        await aiResponseRef.set({
             aiResponse: "Processing...",
             segments: [],
             showCardStack: false,
@@ -77,10 +77,13 @@ sessionId, userMessage) {
 }
 /**
  * Records the final AI text response and registers pending tool calls in Firebase.
+ * NOTE: With the multi-stream ConversationService, this function's role changes.
+ * AI text is primarily handled by the conversational stream. Tool calls come from multiple streams.
+ * This function might be refactored to only handle AI text, or be replaced by more specific functions
+ * called by listeners to ConversationService events/chunks (e.g., when 'conversational' stream ends).
  * Uses userId and sessionId for pathing.
  */
-async function recordAiResponseAndToolCalls(userId, // <-- Added userId
-sessionId, messageId, aiResponse) {
+async function recordAiResponseAndToolCalls(userId, sessionId, messageId, aiResponse) {
     logger.info(`recordAiResponseAndToolCalls called`, { userId, sessionId, messageId, hasContent: !!aiResponse.content, toolCallCount: aiResponse.toolCalls?.length || 0 });
     if (!userId || !sessionId || !messageId) {
         const errorMsg = `Invalid arguments for recordAiResponseAndToolCalls.`;
@@ -89,19 +92,23 @@ sessionId, messageId, aiResponse) {
     }
     try {
         // 1. Update AI Response content under chats/{userId}/{sessionId}/aiResponses
-        const aiResponseRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+        // This part is relevant for recording the AI's main textual response.
+        // It should be called with the final, aggregated text from the conversational stream.
+        const aiResponseRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
         const aiUpdateData = {
             aiResponse: aiResponse.content || "",
             segments: aiResponse.content ? aiResponse.content.split('\n') : [], // Example segmentation
             showCardStack: !!(aiResponse.content && aiResponse.content.includes('\n')), // Example logic
             status: 'complete' // Mark generation as complete
-        };
-        await (0, database_1.update)(aiResponseRef, aiUpdateData);
+        }; // TODO: Ensure aiResponse.content is the correct final text from the conversational stream.
+        await aiResponseRef.update(aiUpdateData);
         logger.info(`Updated AI response content`, { userId, sessionId, messageId });
         // 2. Record pending tool calls under chats/{userId}/{sessionId}/toolCalls
         if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
             logger.info(`Recording ${aiResponse.toolCalls.length} pending tool calls`, { userId, sessionId, messageId });
-            const toolCallsRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/toolCalls/${messageId}`);
+            const toolCallsRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}`);
+            // This assumes aiResponse.toolCalls are all the tool calls for this messageId. // TODO: This was changed, remove this comment if no longer true
+            // With multiple streams, tool calls are now recorded individually by `recordToolCallIntent`.
             const pendingToolCalls = {};
             for (const toolCall of aiResponse.toolCalls) {
                 if (toolCall) {
@@ -114,14 +121,7 @@ sessionId, messageId, aiResponse) {
                     };
                 }
             }
-            // const pendingToolCalls = aiResponse.toolCalls.reduce(
-            //     (acc: Record<string, PendingToolCallData>, toolCall: LLMResponse['toolCalls'][number]) => {
-            //         if (toolCall) {
-            //             acc[toolCall.id] = {
-            //         }
-            //         return acc;
-            //     },{} as Record<string, PendingToolCallData>);
-            await (0, database_1.set)(toolCallsRef, pendingToolCalls); // Set the object for this messageId
+            await toolCallsRef.set(pendingToolCalls); // Set the object for this messageId
             logger.info(`Recorded pending tool calls`, { userId, sessionId, messageId, toolCallIds: Object.keys(pendingToolCalls) });
         }
         else {
@@ -130,9 +130,9 @@ sessionId, messageId, aiResponse) {
     }
     catch (error) {
         logger.error('Failed to record AI response or tool calls', { error: error.message, userId, sessionId, messageId });
-        const aiResponseRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/aiResponses/${messageId}`);
+        const aiResponseRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/aiResponses/${messageId}`);
         try {
-            await (0, database_1.update)(aiResponseRef, {
+            await aiResponseRef.update({
                 status: 'error',
                 error: `Failed to record response details: ${error instanceof Error ? error.message : String(error)}`
             });
@@ -140,6 +140,34 @@ sessionId, messageId, aiResponse) {
         catch (updateError) {
             logger.error("Failed to update AI response status to error", { updateError: updateError.message, userId, sessionId, messageId });
         }
+        throw error;
+    }
+}
+/**
+ * Records a single tool call intent in Firebase, typically when identified by a specific stream.
+ */
+async function recordToolCallIntent(userId, sessionId, messageId, toolCall, sourceStream // e.g., 'potential_tool_call', 'dedicated_tool_call', 'conversational'
+) {
+    logger.info(`recordToolCallIntent called`, { userId, sessionId, messageId, toolCallId: toolCall.id, sourceStream });
+    if (!userId || !sessionId || !messageId || !toolCall || !toolCall.id) {
+        const errorMsg = `Invalid arguments for recordToolCallIntent.`;
+        logger.error(errorMsg, { userId, sessionId, messageId, toolCallId: toolCall?.id });
+        throw new Error(errorMsg);
+    }
+    try {
+        const toolCallDbRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCall.id}`);
+        const pendingToolCallData = {
+            id: toolCall.id,
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            status: 'pending',
+            timestamp: Date.now(),
+        };
+        await toolCallDbRef.set(pendingToolCallData);
+        logger.info(`Recorded pending tool call intent from ${sourceStream}`, { userId, sessionId, messageId, toolCallId: toolCall.id, name: toolCall.function.name });
+    }
+    catch (error) {
+        logger.error('Failed to record tool call intent', { error: error.message, userId, sessionId, messageId, toolCallId: toolCall.id });
         throw error;
     }
 }
@@ -152,14 +180,14 @@ async function updateToolCallResult(userId, sessionId, messageId, toolCallId, re
         throw new Error(`Invalid args for updateToolCallResult`);
     }
     // Build the path to this specific tool call
-    const toolCallRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}`);
+    const toolCallRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}`);
     // Extract the raw “data” payload from your ToolResult
     // (your orchestrator should set result.data = { count, data: [ … ] } )
     const raw = result.data;
     // Safely pull out the array of records; fallback to empty list
     const records = Array.isArray(raw?.data) ? raw.data : [];
     // Now push EVERYTHING the UI needs into RTDB:
-    await (0, database_1.update)(toolCallRef, {
+    await toolCallRef.update({
         status: result.status, // success / failed
         completedAt: Date.now(), // signal "done"
         // store the full raw “data” object under `result`
@@ -185,8 +213,8 @@ sessionId, messageId, fullContent, toolCallId // Now required
     }
     try {
         // Path: chats/{userId}/{sessionId}/toolCalls/{messageId}/{toolCallId}/followUp
-        const followUpRef = (0, database_1.ref)(firebase_1.db, `chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}/followUp`);
-        await (0, database_1.set)(followUpRef, {
+        const followUpRef = firebase_1.db.ref(`chats/${userId}/${sessionId}/toolCalls/${messageId}/${toolCallId}/followUp`);
+        await followUpRef.set({
             content: fullContent,
             timestamp: Date.now()
         });
