@@ -113,45 +113,47 @@ export class ToolOrchestrator extends BaseService {
         return args;
     }
 
-     private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<NangoActionResponse> {
-        // --- FIX: This now correctly destructures our clean ToolCall object ---
-        const { name: toolName, arguments: args, sessionId, userId } = toolCall; 
-        
-        if (!sessionId || !userId) {
-            throw new Error(`Session or User ID is missing for tool '${toolName}'.`);
-        }
+     private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
+    const { name: toolName, arguments: args, userId } = toolCall;
 
-        const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
-        if (!providerConfigKey) {
-             throw new Error(`Configuration missing 'providerConfigKey' for tool: ${toolName}`);
-        }
+    const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
+    if (!providerConfigKey) {
+        throw new Error(`Configuration missing 'providerConfigKey' for tool: ${toolName}`);
+    }
 
-        const connectionId = await redis.get(`active-connection:${userId}`);
+    const connectionId = await redis.get(`active-connection:${userId}`);
         if (!connectionId) {
              throw new Error(`No active Nango connection found to execute tool '${toolName}'.`);
         }
 
-        switch (toolName) {
-            case 'create_entity':
-            case 'update_entity':
-            case 'fetch_entity': {
-                 // --- FIX: Ensure we extract nested properties correctly ---
-                 const { operation, entityType, identifier, fields } = args;
+    // A mapping from your tool names to the script names in Nango
+    const actionNameMap: Record<string, string> = {
+  // Salesforce Tools
+  'create_entity': 'create-entity',
+  'update_entity': 'update-entity',
+  'fetch_entity': 'fetch-entity',
 
-                 if (!operation || !entityType) {
-                    throw new Error(`Missing operation/entityType for ${toolName}`);
-                 }
-                 return await this.nangoService.triggerSalesforceAction(
-        providerConfigKey, 
-        connectionId,
-        args 
-    );
-            }
+  // Zoom Tool
+  'create_zoom_meeting': 'create-meeting',
 
-            default:
-                throw new Error(`Unknown or unhandled tool in orchestrator: ${toolName}`);
-        }
+  // --- ADD THESE MISSING GMAIL TOOLS ---
+  'fetch_emails': 'fetch-emails', // Assumes Nango script is named 'fetch-emails'
+  'send_email': 'send-email'      // Assumes Nango script is named 'send-email'
+};;
+
+    const actionName = actionNameMap[toolName];
+    if (!actionName) {
+      throw new Error(`No Nango action script name mapped for tool: ${toolName}`);
     }
+
+    // Simplified logic: All tools now use the generic Nango service method
+    return await this.nangoService.triggerGenericNangoAction(
+      providerConfigKey,
+      connectionId,
+      actionName,
+      args // Pass the entire arguments object
+    );
+}
 }
 
 

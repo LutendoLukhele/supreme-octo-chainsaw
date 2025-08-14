@@ -246,6 +246,17 @@ export class ToolConfigManager {
         }
     }
 
+    if (toolName === 'create_zoom_meeting') {
+        const type = parsedArgs.type;
+        if ((type === 'scheduled' || type === 'recurring') && !parsedArgs.start_time) {
+            missing.push('start_time');
+        }
+        if (type === 'recurring' && !parsedArgs.recurrence) {
+            missing.push('recurrence');
+        }
+    }
+
+
     // --- Validation for 'update_entity' ---
     if (toolName === 'update_entity') {
         if (!parsedArgs.identifier) {

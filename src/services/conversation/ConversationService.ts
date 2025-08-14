@@ -33,6 +33,30 @@ export interface ProcessedMessageResult {
     conversationalResponse: string; // <-- FIX: Add this property
 }
 
+const PLANNER_META_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "planParallelActions",
+    description: "Use this when a user's request is complex and requires multiple steps or actions to be planned. This triggers the main planning process.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        userInput: {
+          type: "string" as const,
+          description: "The original, full text of the user's complex request."
+        },
+        preliminaryToolCalls: {
+          type: "array" as const,
+          description: "A list of potential tool calls already identified.",
+          items: { "type": "object" as const }
+        }
+      },
+      required: ["userInput"]
+    }
+  }
+};
+
+
 const logger = winston.createLogger({
     level: 'info',
     format: winston.format.combine(
@@ -222,7 +246,12 @@ export class ConversationService extends EventEmitter {
                 ...this.prepareHistoryForLLM(historyForThisStream)
             ];
 
-            const toolsForThisStream = this.toolConfigManager.getGroqToolsDefinition();
+            const toolsForThisStream = this.toolConfigManager.getGroqToolsDefinition() || [];
+
+        // 2. --- THIS IS THE FIX: Dynamically inject the planner meta-tool ---
+        // Since this is the "smart" stream, we always give it the option to escalate to the planner.
+        toolsForThisStream.push(PLANNER_META_TOOL);
+
 
             // Add this debug log:
             logger.debug('Tools being sent to Groq API (Conversational Stream):', {

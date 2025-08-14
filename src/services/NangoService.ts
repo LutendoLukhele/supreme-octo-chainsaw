@@ -25,6 +25,31 @@ export class NangoService {
     this.logger.info(`NangoService initialized.`);
   }
 
+  public async triggerGenericNangoAction(
+  providerConfigKey: string,
+  connectionId: string,
+  actionName: string, // e.g., 'create-meeting'
+  actionPayload: Record<string, any>
+): Promise<any> { // Using `any` for a generic response type
+  this.logger.info('Triggering generic Nango action', { providerConfigKey, actionName });
+
+  try {
+    const response = await this.nango.triggerAction(
+        providerConfigKey,
+        connectionId,
+        actionName,
+        actionPayload
+    );
+    return response;
+  } catch (error: any) {
+    this.logger.error('Generic Nango action failed', {
+      error: error.message || 'An unknown error occurred',
+      actionName,
+    });
+    throw error;
+  }
+}
+
   // --- FIX: This method is now fully aligned with all Salesforce Nango scripts ---
   async triggerSalesforceAction(
   providerConfigKey: string, 

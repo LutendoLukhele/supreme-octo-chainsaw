@@ -124,6 +124,62 @@
         "required": ["operation", "entityType", "fields"] 
       }
     },
+        {
+      "name": "create_zoom_meeting",
+      "description": "Schedules a new meeting in Zoom. Use this for creating calendar events, appointments, or meetings.",
+      "providerConfigKey": "zoom",
+      "category": "Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "The title or topic of the meeting."
+          },
+          "type": {
+            "type": "string",
+            "description": "The type of meeting.",
+            "enum": ["scheduled", "instant", "recurring", "recurringNoFixed"]
+          },
+          "start_time": {
+            "type": "string",
+            "description": "The meeting's start time in ISO 8601 format (e.g., '2025-08-14T10:00:00Z'). Required for 'scheduled' and 'recurring' types."
+          },
+          "duration": {
+            "type": "number",
+            "description": "The meeting's duration in minutes."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The timezone for the meeting, e.g., 'Africa/Johannesburg'."
+          },
+          "agenda": {
+            "type": "string",
+            "description": "A description or agenda for the meeting."
+          },
+          "recurrence": {
+            "type": "object",
+            "description": "Recurrence details for a 'recurring' meeting.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["daily", "weekly", "monthly"]
+              },
+              "repeat_interval": { "type": "number" },
+              "weekly_days": {
+                "type": "string",
+                "enum": ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+              },
+              "end_times": {
+                "type": "number",
+                "description": "How many times the meeting should recur."
+              }
+            }
+          }
+        },
+        "required": ["topic", "type"]
+      }
+    },
     {
       "name": "update_entity",
       "description": "Update existing Salesforce record(s).",
@@ -153,12 +209,13 @@
       "connection_id": "e5bce133-e6df-4cb7-9fb1-ec1d48023079",
       "objects": ["Message"]
     },
-    "google-calendar": {
-      "endpoint": "calendar",
-      "provider_config_key": "google-calendar",
-      "connection_id": "30009351-89b2-4546-9367-bce987d6d79d",
-      "objects": ["Calendar", "Event"]
-    },
+    
+    "zoom": {
+  "endpoint": "zoom",
+  "provider_config_key": "zoom",
+  "connection_id": "<YOUR_ZOOM_CONNECTION_ID>",
+  "objects": ["Meeting"]
+},
     "salesforce-2": {
       "endpoint": "salesforce",
       "provider_config_key": "salesforce-2",
