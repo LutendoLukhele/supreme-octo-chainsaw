@@ -15,6 +15,7 @@ const logger = winston.createLogger({
 });
 
 export class FollowUpService {
+  groqClient: any;
     constructor(
         private client: Groq,
         private model: string,
@@ -26,63 +27,59 @@ export class FollowUpService {
      * Analyzes the result of a completed action to generate a conversational summary
      * and intelligently pre-fill the arguments for the next action in a plan.
      */
-    public async generateFollowUp(
-        sessionId: string,
-        run: Run,
-        completedAction: ActiveAction
-    ): Promise<{ summary: string | null; nextToolCall: ToolCall | null }> {
-        
-        const currentActionIndex = run.tools.findIndex(t => t.toolCall.id === completedAction.id);
-        const nextToolInPlan = run.tools[currentActionIndex + 1];
+  public async generateFollowUp(
+  run: Run,
+  sessionId: string,
+  messageId: string
+): Promise<{ summary: string | null; nextToolCall: ToolCall | null; }> {
+  
+  const lastStep = run.toolExecutionPlan[run.toolExecutionPlan.length - 1];
+  if (!lastStep || lastStep.status !== 'completed' || !lastStep.result) {
+    return { summary: null, nextToolCall: null };
+  }
 
-        if (!nextToolInPlan) {
-            return { summary: "All steps in the plan are complete!", nextToolCall: null };
-        }
+  const { toolName, data } = lastStep.result;
+  
+  // --- START OF ENHANCED LOGIC ---
 
-        const nextToolDef = this.toolConfigManager.getToolDefinition(nextToolInPlan.toolCall.name);
-        if (!nextToolDef) {
-            logger.warn(`FollowUpService: Could not find definition for next tool '${nextToolInPlan.toolCall.name}'.`, { sessionId });
-            return { summary: null, nextToolCall: null };
-        }
+  // 1. Create a summary of the tool's output for the AI.
+  let toolOutputSummary = `The action '${toolName}' completed successfully.`;
+  if (toolName === 'fetch_emails' && data?.emails) {
+    const emailCount = data.emails.length;
+    const firstEmailSubject = emailCount > 0 ? data.emails[0].subject : 'N/A';
+    toolOutputSummary = `I just ran the 'fetch_emails' tool and found ${emailCount} emails. The subject of the most recent email is "${firstEmailSubject}".`;
+  } else if (toolName === 'fetch_entity' && data?.data?.records) {
+    const recordCount = data.data.records.length;
+    const firstRecordName = recordCount > 0 ? data.data.records[0].name : 'N/A';
+    toolOutputSummary = `I just ran the 'fetch_entity' tool and found ${recordCount} records. The first record is named "${firstRecordName}".`;
+  }
 
-        // --- FIX: Add a null check for run.userInput before calling .replace() ---
-        const userInput = run.userInput || ''; // Default to an empty string if undefined
+  // 2. Construct a prompt for the LLM.
+  const prompt = `
+    You are an AI assistant. A tool has just been successfully executed on your behalf.
+    The user's original request was: "${run.userInput}"
+    Tool Execution Result: "${toolOutputSummary}"
+    
+    Based on this, formulate a brief, natural, and helpful follow-up message for the user.
+    Summarize what you found and ask what they would like to do next with the information.
+    Do not mention that a "tool" was run. Just speak naturally.
+  `;
 
-        const prompt = FOLLOW_UP_PROMPT_TEMPLATE
-            .replace('{{USER_INITIAL_QUERY}}', userInput)
-            .replace('{{PREVIOUS_TOOL_RESULT_JSON}}', JSON.stringify(completedAction.result, null, 2))
-            .replace('{{NEXT_TOOL_NAME}}', nextToolDef.name)
-            .replace('{{NEXT_TOOL_DESCRIPTION}}', nextToolDef.description)
-            .replace('{{NEXT_TOOL_PARAMETERS_JSON}}', JSON.stringify(nextToolDef.parameters, null, 2));
+  // 3. Call the LLM to generate the conversational response.
+  try {
+    const chatCompletion = await this.client.chat.completions.create({
+        messages: [{ role: 'user', content: prompt }],
+        model: this.model,
+        max_tokens: this.maxTokens,
+    });
+    
+    const summary = chatCompletion.choices[0]?.message?.content || null;
+    return { summary, nextToolCall: null };
 
-        try {
-            const response = await this.client.chat.completions.create({
-                model: this.model,
-                messages: [{ role: 'system', content: prompt }],
-                max_tokens: this.maxTokens,
-                temperature: 0.3,
-                response_format: { type: "json_object" },
-            });
-
-            const responseObject = JSON.parse(response.choices[0]?.message?.content || '{}');
-            
-            const summary = responseObject.summary || null;
-            const generatedArgs = responseObject.nextToolCallArgs || {};
-            
-            const nextToolCall: ToolCall = {
-                id: nextToolInPlan.toolCall.id,
-                name: nextToolInPlan.toolCall.name,
-                arguments: generatedArgs,
-
-                sessionId: '',
-                userId: ''
-            };
-
-            return { summary, nextToolCall };
-
-        } catch (error: any) {
-            logger.error('Error in FollowUpService generating next step', { error: error.message });
-            return { summary: "I encountered an issue while preparing the next step.", nextToolCall: null };
-        }
-    }
+  } catch (error) {
+    logger.error('Failed to generate AI follow-up from Groq.', { error });
+    // Fallback to the simple summary if the AI call fails
+    return { summary: toolOutputSummary, nextToolCall: null };
+  }
+}
 }

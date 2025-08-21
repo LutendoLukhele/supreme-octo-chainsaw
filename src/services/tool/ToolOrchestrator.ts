@@ -43,41 +43,63 @@ export class ToolOrchestrator extends BaseService {
     }
 
     async executeTool(toolCall: ToolCall): Promise<ToolResult> {
-        const executionId = toolCall.id || uuidv4();
-        const { name: toolName } = toolCall;
+    const executionId = toolCall.id || uuidv4();
+    const { name: toolName } = toolCall;
 
-        // This service now assumes the tool call has been validated by a higher-level service
-        // like ActionLauncherService. Its only job is to execute.
-        this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
+    this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
 
-        try {
-            const nangoResult = await this.executeNangoActionDispatcher(toolCall);
-            
-            const isSuccess = (nangoResult as any).success === true || ((nangoResult as any).success === undefined && (nangoResult as any).data !== undefined);
+    try {
+        const nangoResult = await this.executeNangoActionDispatcher(toolCall);
+        let finalData: any;
 
-            if (isSuccess) {
-                this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
-                return {
-                    status: 'success',
-                    toolName: toolName,
-                    data: (nangoResult as any).hasOwnProperty('data') ? (nangoResult as any).data : nangoResult,
-                    error: ''
-                };
-            } else {
-                const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
-                this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
-                return {
-                    status: 'failed', toolName: toolName, data: null, error: errorMessage
+        // This logic correctly handles the "truncated_response" key from Nango
+        if (nangoResult && typeof nangoResult.truncated_response === 'string') {
+            this.logger.warn('Nango returned a truncated_response. Parsing partial data.', { tool: toolName });
+            try {
+                // Attempt to parse the partial JSON string
+                finalData = JSON.parse(nangoResult.truncated_response);
+            } catch (parseError) {
+                this.logger.error('Failed to parse truncated_response from Nango.', { parseError, tool: toolName });
+                // If parsing fails, return an error object but still mark as success to avoid a failed run
+                finalData = { 
+                    error: 'Failed to parse truncated response from Nango. Data may be incomplete.',
+                    raw: nangoResult.truncated_response 
                 };
             }
-        } catch (error: any) {
-            logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
+        } else if ((nangoResult as any)?.success === false) {
+            // Handles explicit failures from Nango
+            const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
+            this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
             return {
-                status: 'failed', toolName: toolName, data: null,
-                error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
+                status: 'failed',
+                toolName: toolName,
+                data: null,
+                error: errorMessage
             };
+        } else {
+            // Handles a normal, non-truncated, successful response
+            finalData = nangoResult;
         }
+
+        // If we get here, the tool execution is considered a success.
+        this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
+        return {
+            status: 'success',
+            toolName: toolName,
+            data: finalData,
+            error: ''
+        };
+
+    } catch (error: any) {
+        logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
+        return {
+            status: 'failed',
+            toolName: toolName,
+            data: null,
+            error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
+        };
     }
+}
 
     // Add this function inside the ToolOrchestrator class in ToolOrchestrator.ts
 
@@ -113,46 +135,47 @@ export class ToolOrchestrator extends BaseService {
         return args;
     }
 
-     private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
+     // In src/services/tool/ToolOrchestrator.ts
+
+private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
     const { name: toolName, arguments: args, userId } = toolCall;
 
+    // 1. This correctly gets the Provider Key (e.g., 'google-mail')
     const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
     if (!providerConfigKey) {
         throw new Error(`Configuration missing 'providerConfigKey' for tool: ${toolName}`);
     }
 
+    // 2. This correctly gets the user's unique Connection ID from Redis
     const connectionId = await redis.get(`active-connection:${userId}`);
-        if (!connectionId) {
-             throw new Error(`No active Nango connection found to execute tool '${toolName}'.`);
-        }
-
-    // A mapping from your tool names to the script names in Nango
-    const actionNameMap: Record<string, string> = {
-  // Salesforce Tools
-  'create_entity': 'create-entity',
-  'update_entity': 'update-entity',
-  'fetch_entity': 'fetch-entity',
-
-  // Zoom Tool
-  'create_zoom_meeting': 'create-meeting',
-
-  // --- ADD THESE MISSING GMAIL TOOLS ---
-  'fetch_emails': 'fetch-emails', // Assumes Nango script is named 'fetch-emails'
-  'send_email': 'send-email'      // Assumes Nango script is named 'send-email'
-};;
-
-    const actionName = actionNameMap[toolName];
-    if (!actionName) {
-      throw new Error(`No Nango action script name mapped for tool: ${toolName}`);
+    if (!connectionId) {
+        throw new Error(`No active Nango connection found to execute tool '${toolName}'.`);
     }
 
-    // Simplified logic: All tools now use the generic Nango service method
-    return await this.nangoService.triggerGenericNangoAction(
-      providerConfigKey,
-      connectionId,
-      actionName,
-      args // Pass the entire arguments object
-    );
+    this.logger.info(`Dispatching tool '${toolName}' with correct IDs.`, { providerConfigKey });
+
+    switch (toolName) {
+        case 'fetch_emails':
+            // --- THIS IS THE FIX ---
+            // Ensure the dynamic 'connectionId' from Redis is passed as the second argument,
+            // and 'providerConfigKey' is passed as the first.
+            return this.nangoService.fetchEmails(providerConfigKey, connectionId, args);
+
+        case 'create_zoom_meeting':
+            return this.nangoService.createCalendarEvent(providerConfigKey, connectionId, args);
+        
+        case 'create_entity':
+        case 'update_entity':
+        case 'fetch_entity':
+            return this.nangoService.triggerSalesforceAction(
+                providerConfigKey,
+                connectionId,
+                args
+            );
+
+        default:
+            throw new Error(`No Nango action handler mapped for tool: ${toolName}`);
+    }
 }
 }
 

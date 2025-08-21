@@ -1,6 +1,6 @@
 // src/services/tool/RunManager.ts
 
-import { Run, RunStatus, ToolExecutionMeta } from './run.types';
+import { Run, RunStatus, ToolExecutionStep } from './run.types';
 import { ToolResult, Message } from '../conversation/types';
 import { v4 as uuidv4 } from 'uuid';
 import winston from 'winston';
@@ -25,7 +25,7 @@ export class RunManager {
     sessionId: string;
     userId: string;
     userInput: string;
-    toolExecutionPlan: ToolExecutionMeta[];
+    toolExecutionPlan: ToolExecutionStep[];
     contextMessages?: Message[];
     connectionId?: string;
   }): Run {
@@ -38,17 +38,19 @@ export class RunManager {
     })).slice(-10);
 
     const run: Run = {
-        id: runId,
-        sessionId: params.sessionId,
-        userId: params.userId,
-        connectionId: params.connectionId,
-        userInput: params.userInput,
-        contextMessages: truncatedContext,
-        status: 'pending',
-        startedAt: now,
-        tools: params.toolExecutionPlan,
-        initiatedBy: 'assistant',
-        parentRunId: ''
+      id: runId,
+      sessionId: params.sessionId,
+      userId: params.userId,
+      connectionId: params.connectionId,
+      userInput: params.userInput,
+      contextMessages: truncatedContext,
+      status: 'pending',
+      startedAt: now,
+      tools: params.toolExecutionPlan,
+      initiatedBy: 'assistant',
+      parentRunId: '',
+      toolExecutionPlan: [],
+      completedAt: ''
     };
 
     logger.info(`Run object created in memory.`, { runId,  status: 'pending' });
@@ -56,7 +58,7 @@ export class RunManager {
   }
 
   public static addToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-        const toolIndex = run.tools.findIndex(t => t.toolCall.id === toolCallId);
+        const toolIndex = run.tools.findIndex((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
         if (toolIndex !== -1) {
             run.tools[toolIndex].status = result.status;
             run.tools[toolIndex].result = result.data; // <<< Store the result data
@@ -70,7 +72,7 @@ export class RunManager {
    * Updates a tool's metadata within a run when its execution begins.
    */
   public static startToolExecution(run: Run, toolCallId: string): Run {
-    const toolMeta = run.tools.find(t => t.toolCall.id === toolCallId);
+    const toolMeta = run.tools.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
     if (toolMeta) {
       toolMeta.startedAt = new Date().toISOString();
       run.status = 'running';
@@ -84,7 +86,7 @@ export class RunManager {
    * The calling context (e.g., index.ts) is responsible for sending WebSocket updates.
    */
   public static recordToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-    const toolMeta = run.tools.find(t => t.toolCall.id === toolCallId);
+    const toolMeta = run.tools.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
 
     if (!toolMeta) {
       logger.warn(`Could not find tool with toolCallId "${toolCallId}" in run "${run.id}" to record result.`);
@@ -112,7 +114,7 @@ export class RunManager {
    * Finalizes a Run. This should be called after the last expected event.
    */
   public static finalizeRun(run: Run): Run {
-    const allToolsCompleted = run.tools.every(t => !!t.result);
+    const allToolsCompleted = run.tools.every((t: { result: any; }) => !!t.result);
     if (!allToolsCompleted) {
         logger.info(`Run ${run.id} will not be finalized yet; waiting for more tool results.`);
         return run;
@@ -121,8 +123,8 @@ export class RunManager {
     const now = new Date().toISOString();
     run.completedAt = now;
 
-    const results = run.tools.map(t => t.result?.status);
-    const successCount = results.filter(r => r === 'success').length;
+    const results = run.tools.map((t: { result: { status: any; }; }) => t.result?.status);
+    const successCount = results.filter((r: string) => r === 'success').length;
 
     if (results.length === 0) run.status = 'failed';
     else if (successCount === results.length) run.status = 'success';

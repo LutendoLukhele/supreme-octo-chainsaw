@@ -1,8 +1,10 @@
-// src/index.ts (Final, Corrected Version with Persistent Sessions)
+// src/index.ts (Definitive, Final, Corrected Version)
 
 import express from 'express';
 import dotenv from 'dotenv';
 dotenv.config();
+import Redis from 'ioredis';
+
 
 import { createServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -14,7 +16,9 @@ import * as storage from 'node-persist';
 // --- Core Dependencies & Services ---
 import { CONFIG } from './config';
 import { auth as firebaseAdminAuth } from './firebase';
-import { ConversationService, ProcessedMessageResult } from './services/conversation/ConversationService';
+const redis = new Redis(CONFIG.REDIS_URL!);
+
+import { ConversationService } from './services/conversation/ConversationService';
 import { ToolOrchestrator } from './services/tool/ToolOrchestrator';
 import { StreamManager } from './services/stream/StreamManager';
 import { NangoService } from './services/NangoService';
@@ -22,16 +26,12 @@ import { FollowUpService } from './services/FollowUpService';
 import { ToolConfigManager } from './services/tool/ToolConfigManager';
 import { PlannerService, ActionPlan } from './services/PlannerService';
 import { ActionLauncherService } from './action-launcher.service';
-import { ScratchPadStore } from './services/scratch/ScratchPadStore';
-import { UserSeedStatusStore } from './services/user-seed-status.store';
 import { RunManager } from './services/tool/RunManager';
 import { StreamChunk } from './services/stream/types';
 import { ExecuteActionPayload } from './types/actionlaunchertypes';
 
 // --- Types ---
-import { Run } from './services/tool/run.types';
-import { ToolResult } from './services/conversation/types';
-import { ToolCall } from './services/tool/tool.types';
+import { Run, ToolExecutionStep, ToolCall } from './services/tool/run.types';
 import { BeatEngine } from './BeatEngine';
 
 // --- Logger Setup ---
@@ -48,8 +48,6 @@ const nangoService = new NangoService();
 const streamManager = new StreamManager({ logger });
 const toolOrchestrator = new ToolOrchestrator({ logger, nangoService, toolConfigManager });
 const plannerService = new PlannerService(CONFIG.OPEN_AI_API_KEY, CONFIG.MODEL_NAME, CONFIG.MAX_TOKENS, toolConfigManager);
-const scratchPadStore = new ScratchPadStore();
-const userSeedStatusStore = new UserSeedStatusStore(CONFIG.REDIS_URL!);
 const beatEngine = new BeatEngine(toolConfigManager);
 const followUpService = new FollowUpService(groqClient, CONFIG.MODEL_NAME, 150, toolConfigManager);
 
@@ -86,7 +84,7 @@ async function streamText(sessionId: string, messageId: string, text: string) {
     streamManager.sendChunk(sessionId, { type: 'conversational_text_segment', content: { status: 'START_STREAM' }, messageId } as StreamChunk);
     const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
     for (let i = 0; i < text.length; i += 10) {
-        const chunk = text.substring(i, i + 10);
+        const chunk = text.substring(i, Math.min(i + 10, text.length));
         streamManager.sendChunk(sessionId, { type: 'conversational_text_segment', content: { status: 'STREAMING', segment: { segment: chunk, styles: [], type: 'text' } }, messageId } as StreamChunk);
         await delay(20);
     }
@@ -120,30 +118,92 @@ wss.on('connection', (ws: WebSocket) => {
                 return;
             }
 
-            const state = await sessionState.getItem(sessionId);
+            const state = await sessionState.getItem(sessionId) as SessionState;
             if (!state) { throw new Error('Not authenticated'); }
             const { userId } = state;
 
             if (data.type === 'execute_action' && data.content) {
                 const actionPayload = data.content as ExecuteActionPayload;
                 let currentRun = state.activeRun;
+
                 if (!currentRun) {
-                    logger.warn(`No active run found for single action execution. Creating a new run.`, { sessionId });
-                    const userInput = `Executing action: ${actionPayload.toolName}`;
-                    currentRun = RunManager.createRun({ sessionId, userId, userInput, toolExecutionPlan: [] });
+                    logger.error('Cannot execute action without an active run.', { sessionId });
+                    streamManager.sendChunk(sessionId, { type: 'error', content: 'No active run found to execute action.' });
+                    return; 
                 }
-                const updatedAction = await actionLauncherService.executeAction(sessionId, userId, actionPayload, toolOrchestrator);
-                currentRun = RunManager.addToolResult(currentRun, updatedAction.id, {
-                    status: updatedAction.status === 'completed' ? 'success' : 'failed',
-                    toolName: updatedAction.toolName,
-                    data: updatedAction.result,
-                    error: updatedAction.error,
-                });
+
+                const completedAction = await actionLauncherService.executeAction(sessionId, userId, actionPayload, toolOrchestrator);
+
+                if (!currentRun.toolExecutionPlan) {
+                    currentRun.toolExecutionPlan = [];
+                }
+
+                let toolIndex = currentRun.toolExecutionPlan.findIndex((step: ToolExecutionStep) => step.toolCall.id === completedAction.id);
+
+                if (toolIndex === -1) {
+                    const newStep: ToolExecutionStep = {
+                        toolCall: {
+                            id: completedAction.id, name: completedAction.toolName,
+                            arguments: completedAction.arguments || {}, sessionId: sessionId, userId: userId,
+                        },
+                        status: 'pending', startedAt: new Date().toISOString() 
+                    };
+                    currentRun.toolExecutionPlan.push(newStep);
+                    toolIndex = currentRun.toolExecutionPlan.length - 1;
+                }
+
+                currentRun.toolExecutionPlan[toolIndex].status = completedAction.status;
+                currentRun.toolExecutionPlan[toolIndex].result = {
+                    status: completedAction.status === 'completed' ? 'success' : 'failed',
+                    toolName: completedAction.toolName, data: completedAction.result, error: completedAction.error
+                };
+                currentRun.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
+                
+                const allDone = currentRun.toolExecutionPlan.every((step: ToolExecutionStep) => step.status === 'completed' || step.status === 'failed');
+                if (allDone) {
+                    currentRun.status = 'completed';
+                    (currentRun as any).completedAt = new Date().toISOString();
+                }
+
                 state.activeRun = currentRun;
                 await sessionState.setItem(sessionId, state);
                 streamManager.sendChunk(sessionId, { type: 'run_updated', content: currentRun });
+                
+                if (completedAction.status === 'completed') {
+                    logger.info('Action completed, generating follow-up message.', { sessionId });
+                    try {
+                        const followUpResult = await followUpService.generateFollowUp(currentRun, sessionId, uuidv4());
+                        const followUpText = followUpResult.summary;
+                        if (followUpText && followUpText.trim().length > 0) {
+                            await streamText(sessionId, uuidv4(), followUpText);
+                        }
+                    } catch (error: any) {
+                        logger.error('Failed to generate follow-up message.', { error: error.message, sessionId });
+                    }
+                }
 
-            } else if (data.type === 'content' && typeof data.content === 'string') {
+                } else if (data.type === 'update_active_connection' && data.content) {
+                const { connectionId } = data.content;
+                if (!userId || !connectionId) {
+                    logger.warn('Received update_active_connection but missing userId or connectionId');
+                    return;
+                }
+                
+                // This is the key step: save the new connectionId to Redis for the user
+                await redis.set(`active-connection:${userId}`, connectionId);
+                logger.info(`Successfully set active Nango connection for user via client message`, { userId });
+
+                // Optionally send a confirmation back to the client
+                ws.send(JSON.stringify({ type: 'connection_updated_ack' }));
+
+            // This is your existing 'content' handler
+            } else if (data.type === 'content' && typeof data.content === 'string') 
+
+            
+
+
+
+ {
                 const messageId = uuidv4();
                 const processedResult = await conversationService.processMessageAndAggregateResults(data.content, sessionId, messageId, userId);
                 const { aggregatedToolCalls, conversationalResponse } = processedResult;
@@ -156,8 +216,10 @@ wss.on('connection', (ws: WebSocket) => {
                 const executableToolCount = aggregatedToolCalls.filter(t => t.name !== 'planParallelActions').length;
 
                 if (isPlanRequest || executableToolCount > 1) {
-                    logger.info(`Complex request identified. Routing to PlannerService.`, { sessionId });
-                    const run = RunManager.createRun({ sessionId, userId, userInput: data.content, toolExecutionPlan: [] });
+                    const run = RunManager.createRun({
+                        sessionId, userId, userInput: data.content,
+                        toolExecutionPlan: []
+                    });
                     state.activeRun = run;
                     await sessionState.setItem(sessionId, state);
                     streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
@@ -178,9 +240,17 @@ wss.on('connection', (ws: WebSocket) => {
                         tool: singleToolCall.name,
                         arguments: singleToolCall.arguments,
                         status: 'ready',
-                        function: undefined
+                        function: undefined,
                     }];
-                    await actionLauncherService.processActionPlan(singleStepPlan, sessionId, userId, messageId, state.activeRun);
+                    const run = RunManager.createRun({
+                        sessionId, userId, userInput: data.content,
+                        toolExecutionPlan: []
+                    });
+                    state.activeRun = run;
+                    
+                    await sessionState.setItem(sessionId, state);
+                    streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
+                    await actionLauncherService.processActionPlan(singleStepPlan, sessionId, userId, messageId, run);
                 } else if (!conversationalResponse) {
                     await streamText(sessionId, messageId, "I'm not sure how to help. Please rephrase.");
                 }
