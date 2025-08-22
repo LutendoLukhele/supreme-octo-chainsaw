@@ -86,7 +86,6 @@ export class RunController {
             toolExecutionPlan: [{
                 toolCall: exportToolCall, startedAt: new Date().toISOString(),
                 status: '',
-                error: undefined,
                 finishedAt: ''
             }],
             connectionId: connectionId || parentRun.connectionId,
