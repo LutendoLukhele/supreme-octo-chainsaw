@@ -21,3 +21,5 @@ EXPOSE 8080
 
 # This command will run 'node dist/index.js' as defined in your package.json
 CMD ["npm", "start"]
+
+# --- done ---
