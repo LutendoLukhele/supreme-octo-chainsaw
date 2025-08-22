@@ -62,7 +62,7 @@ export const CONFIG = {
     NANGO_BASE_URL: getEnvVar('NANGO_BASE_URL', 'https://api.nango.dev'),
     FIREBASE_API_KEY: getEnvVar('FIREBASE_API_KEY'), // Often needed
     FIREBASE_AUTH_DOMAIN: getEnvVar('FIREBASE_AUTH_DOMAIN'),
-    FIREBASE_PROJECT_ID: getEnvVar('FIREBASE_PROJECT_ID', undefined, true),     // Critical for Firebase
+    FIREBASE_PROJECT_ID: getEnvVar('FIREBASE_PROJECT_ID'),     // Critical for Firebase
     FIREBASE_STORAGE_BUCKET: getEnvVar('FIREBASE_STORAGE_BUCKET'),
     FIREBASE_MESSAGING_SENDER_ID: getEnvVar('FIREBASE_MESSAGING_SENDER_ID'),
     FIREBASE_APP_ID: getEnvVar('FIREBASE_APP_ID'),
