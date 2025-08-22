@@ -1,27 +1,23 @@
-# Use a lightweight and official Node.js runtime
-FROM node:18-alpine
-
-# Set the working directory inside the container
+# --- Build Stage ---
+# This stage builds the TypeScript into JavaScript
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# Copy package.json and package-lock.json (or yarn.lock)
 COPY package*.json ./
-
-# Install only production dependencies to keep the image small
-# Note: Since your build tool 'cpx' is a dependency, we install all first, then prune.
 RUN npm install
-
-# Copy the rest of your application source code
 COPY . .
-
-# Run your build script (which compiles TS to JS and copies assets)
 RUN npm run build
 
-# Prune development dependencies after the build is complete
-RUN npm prune --production
+# --- Production Stage ---
+# This stage creates the final, clean image for deployment
+FROM node:18-alpine
+WORKDIR /app
 
-# Expose the port your application will run on (e.g., 8080 for Cloud Run)
+# Copy necessary files from the build stage
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+
 EXPOSE 8080
 
-# Set the command to start your application using the compiled JavaScript
-CMD [ "npm", "start" ]
+# This command will run 'node dist/index.js' as defined in your package.json
+CMD ["npm", "start"]
