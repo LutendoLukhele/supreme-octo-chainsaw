@@ -112,40 +112,45 @@ export class NangoService {
   }
 
   // --- FIX: Aligned with fetch-emails.ts script ---
-  async fetchEmails(
+   async fetchEmails(
     providerConfigKey: string,
-    connectionId: string, // This argument will now be used
-    input: any
+    connectionId: string,
+    input: any // This is the action payload from the tool call
   ): Promise<NangoResponse> {
-  const actionName = 'fetch-emails';
-  this.logger.info('Fetching emails via Nango custom endpoint', { actionName, input });
+    const actionName = 'fetch-emails';
+    this.logger.info('Fetching emails via Nango action trigger', { actionName, input });
 
-  try {
-    const response = await axios.get(
-      'https://api.nango.dev/v1/fetch-emails',
-      {
-        params: input,
-        headers: {
-          'Authorization': `Bearer ${CONFIG.NANGO_SECRET_KEY}`,
-          'Provider-Config-Key': providerConfigKey,
-          // The hardcoded value is removed, and the dynamic connectionId is used
-          'Connection-Id': connectionId,
-          'Content-Type': 'application/json'
+    try {
+      // Switched from axios.get to axios.post
+      const response = await axios.post(
+        'https://api.nango.dev/action/trigger', // Use the standard action trigger endpoint
+        {
+          // Structure the payload exactly as Nango expects for actions
+          action_name: actionName,
+          input: input 
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${CONFIG.NANGO_SECRET_KEY}`,
+            'Provider-Config-Key': providerConfigKey,
+            'Connection-Id': connectionId,
+            'Content-Type': 'application/json'
+          }
         }
-      }
-    );
-    
-    this.logger.info('Nango direct API call successful', { actionName });
-    return response.data as NangoResponse;
+      );
+      
+      this.logger.info('Nango direct API call successful', { actionName });
+      return response.data as NangoResponse;
 
-  } catch (error: any) {
-    this.logger.error('Nango direct API call to fetch-emails failed', { 
-      error: error.response?.data || error.message, 
-      actionName 
-    });
-    throw new Error(error.response?.data?.message || `Request failed with status code ${error.response?.status}`);
+    } catch (error: any) {
+      this.logger.error('Nango direct API call to fetch-emails failed', { 
+        error: error.response?.data || error.message, 
+        actionName 
+      });
+      // Re-throw a descriptive error
+      throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+    }
   }
-}
 
    // --- FIX: Aligned with events.ts script ---
   async fetchCalendarEvents(
