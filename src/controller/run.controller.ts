@@ -5,7 +5,7 @@ import { RunManager } from '../services/tool/RunManager';
 import { ToolOrchestrator } from '../services/tool/ToolOrchestrator';
 import { StreamManager } from '../services/stream/StreamManager'; // Import StreamManager
 import { ToolCall } from '../services/tool/tool.types';
-import { Run } from '../services/tool/run.types'; // Import Run type
+import { Run, ToolExecutionStep } from '../services/tool/run.types'; // Import Run type
 import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -79,15 +79,18 @@ export class RunController {
         };
 
         // 2. Create a new Run object in memory for this export action
+        const initialStep: ToolExecutionStep = {
+            stepId: 'step_1',
+            toolCall: exportToolCall,
+            status: 'pending',
+            startedAt: new Date().toISOString(),
+        };
+
         let exportRun = RunManager.createRun({
             sessionId: sessionId,
             userId: userId,
             userInput: `User initiated export: ${toolName}`,
-            toolExecutionPlan: [{
-                toolCall: exportToolCall, startedAt: new Date().toISOString(),
-                status: '',
-                finishedAt: ''
-            }],
+            toolExecutionPlan: [initialStep],
             connectionId: connectionId || parentRun.connectionId,
             contextMessages: parentRun.contextMessages,
         });
@@ -104,10 +107,13 @@ export class RunController {
 
         // 3. Execute the action asynchronously and stream updates
         try {
+            const planStep = exportRun.toolExecutionPlan.find(step => step.toolCall.id === exportToolCall.id) ?? exportRun.toolExecutionPlan[0];
+            const planStepId = planStep?.stepId ?? 'step_1';
+
             exportRun = RunManager.startToolExecution(exportRun, exportToolCall.id);
             this.streamManager.sendChunk(sessionId, { type: 'run_updated', content: exportRun });
 
-            const result = await this.toolOrchestrator.executeTool(exportToolCall);
+            const result = await this.toolOrchestrator.executeTool(exportToolCall, exportRun.planId, planStepId);
             
             exportRun = RunManager.recordToolResult(exportRun, exportToolCall.id, result);
             this.streamManager.sendChunk(sessionId, { type: 'run_updated', content: exportRun });

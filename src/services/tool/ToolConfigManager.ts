@@ -177,6 +177,9 @@ export class ToolConfigManager {
         return this.toolMap.get(toolName);
     }
 
+    public getToolByName(toolName: string): ToolConfig | undefined {
+        return this.toolMap.get(toolName);
+    }
     
 
     public getToolDisplayName(toolName: string): string | undefined {

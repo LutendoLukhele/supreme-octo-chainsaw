@@ -51,7 +51,7 @@ export class Resolver {
         } else if (Array.isArray(input)) {
             return Promise.all(input.map(item => this.resolve(planId, item)));
         } else if (typeof input === 'object' && input !== null) {
-            const resolvedObject = {};
+            const resolvedObject: Record<string, any> = {};
             for (const key in input) {
                 resolvedObject[key] = await this.resolve(planId, input[key]);
             }

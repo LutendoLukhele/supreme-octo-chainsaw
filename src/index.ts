@@ -183,6 +183,7 @@ wss.on('connection', (ws: WebSocket) => {
 
             if (toolIndex === -1) {
                 const newStep: ToolExecutionStep = {
+                    stepId: `step_${uuidv4()}`,
                     toolCall: {
                         id: completedAction.id || uuidv4(),
                         name: completedAction.toolName,
@@ -209,7 +210,7 @@ wss.on('connection', (ws: WebSocket) => {
             const allDone = currentRun.toolExecutionPlan.every(step => step.status === 'completed' || step.status === 'failed');
             if (allDone) {
                 currentRun.status = 'completed';
-                (currentRun as any).completedAt = new Date().toISOString();
+                currentRun.completedAt = new Date().toISOString();
             }
 
             state.activeRun = currentRun;
@@ -394,7 +395,8 @@ if (isPlanRequest || executableToolCount > 1) {
         } as StreamChunk);
 
         // Save to activeRun for later execution
-        run.toolExecutionPlan = actionPlan.map((step: ActionStep) => ({
+        run.toolExecutionPlan = actionPlan.map((step: ActionStep, index: number) => ({
+            stepId: step.id || `step_${index + 1}`,
             toolCall: {
                 id: step.id,
                 name: step.tool,

@@ -54,6 +54,14 @@ export interface Message {
 
 }
 
+export enum MessageType {
+  STANDARD = 'STANDARD',
+  TOOL_EXECUTION = 'TOOL_EXECUTION',
+  PLAN_SUMMARY = 'PLAN_SUMMARY',
+  STEP_ANNOUNCEMENT = 'STEP_ANNOUNCEMENT',
+  STEP_COMPLETE = 'STEP_COMPLETE',
+}
+
 /**
  * Represents an action that has all its parameters validated and is ready
  * for user confirmation before execution.

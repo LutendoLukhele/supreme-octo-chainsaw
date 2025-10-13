@@ -40,7 +40,7 @@ export class RunManager {
 
     const toolsWithStepIds = params.toolExecutionPlan.map((step, index) => ({
         ...step,
-        stepId: `step_${index + 1}`
+        stepId: step.stepId ?? `step_${index + 1}`,
     }));
 
     const run: Run = {
@@ -64,24 +64,23 @@ export class RunManager {
   }
 
   public static addToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-        const toolIndex = run.toolExecutionPlan.findIndex((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
-        if (toolIndex !== -1) {
-            run.toolExecutionPlan[toolIndex].status = result.status;
-            // This seems incorrect, result is the whole ToolResult, not just data.
-            // Let's assume the intention was to store the whole result.
-            run.toolExecutionPlan[toolIndex].result = result; 
-            run.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
-        }
-        return run;
+    const toolIndex = run.toolExecutionPlan.findIndex((t: ToolExecutionStep) => t.toolCall.id === toolCallId);
+    if (toolIndex !== -1) {
+      run.toolExecutionPlan[toolIndex].status = result.status === 'success' ? 'completed' : 'failed';
+      run.toolExecutionPlan[toolIndex].result = result;
+      run.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
     }
+    return run;
+  }
 
   /**
    * Updates a tool's metadata within a run when its execution begins.
    */
   public static startToolExecution(run: Run, toolCallId: string): Run {
-    const toolMeta = run.toolExecutionPlan.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
+    const toolMeta = run.toolExecutionPlan.find((t: ToolExecutionStep) => t.toolCall.id === toolCallId);
     if (toolMeta) {
       toolMeta.startedAt = new Date().toISOString();
+      toolMeta.status = 'running';
       run.status = 'running';
       logger.info(`Updated run in memory: tool execution started.`, { runId: run.id, toolCallId });
     }
@@ -93,7 +92,7 @@ export class RunManager {
    * The calling context (e.g., index.ts) is responsible for sending WebSocket updates.
    */
   public static recordToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-    const toolMeta = run.toolExecutionPlan.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
+    const toolMeta = run.toolExecutionPlan.find((t: ToolExecutionStep) => t.toolCall.id === toolCallId);
 
     if (!toolMeta) {
       logger.warn(`Could not find tool with toolCallId "${toolCallId}" in run "${run.id}" to record result.`);
@@ -101,8 +100,9 @@ export class RunManager {
     }
 
     const now = new Date().toISOString();
-    toolMeta.completedAt = now;
-    toolMeta.result = { ...result, toolCallId, startedAt: toolMeta.startedAt, completedAt: now };
+    toolMeta.finishedAt = now;
+    toolMeta.status = result.status === 'success' ? 'completed' : 'failed';
+    toolMeta.result = result;
 
     logger.info(`Updated run in memory: tool result recorded.`, { runId: run.id, toolCallId, status: result.status });
     return run;
@@ -121,7 +121,7 @@ export class RunManager {
    * Finalizes a Run. This should be called after the last expected event.
    */
   public static finalizeRun(run: Run): Run {
-    const allToolsCompleted = run.toolExecutionPlan.every((t: { result: any; }) => !!t.result);
+    const allToolsCompleted = run.toolExecutionPlan.every((t: ToolExecutionStep) => !!t.result);
     if (!allToolsCompleted) {
         logger.info(`Run ${run.id} will not be finalized yet; waiting for more tool results.`);
         return run;
@@ -130,13 +130,20 @@ export class RunManager {
     const now = new Date().toISOString();
     run.completedAt = now;
 
-    const results = run.tools.map((t: { result: { status: any; }; }) => t.result?.status);
-    const successCount = results.filter((r: string) => r === 'success').length;
+    const results = run.toolExecutionPlan
+      .map((t: ToolExecutionStep) => t.result?.status)
+      .filter((status): status is 'success' | 'failed' => !!status);
+    const successCount = results.filter((r) => r === 'success').length;
 
-    if (results.length === 0) run.status = 'failed';
-    else if (successCount === results.length) run.status = 'success';
-    else if (successCount > 0) run.status = 'partial_success';
-    else run.status = 'failed';
+    if (results.length === 0) {
+      run.status = 'failed';
+    } else if (successCount === results.length) {
+      run.status = 'completed';
+    } else if (successCount > 0) {
+      run.status = 'partial_success';
+    } else {
+      run.status = 'failed';
+    }
 
     logger.info(`Updated run in memory: run finalized.`, { runId: run.id, finalStatus: run.status });
     return run;
