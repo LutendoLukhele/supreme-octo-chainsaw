@@ -31,14 +31,21 @@ export class RunManager {
   }): Run {
     const now = new Date().toISOString();
     const runId = `run_${uuidv4()}`;
+    const planId = `plan_${uuidv4()}`;
 
     const truncatedContext = params.contextMessages?.map(msg => ({
         ...msg,
         content: msg.content ? msg.content.substring(0, 500) + (msg.content.length > 500 ? '...' : '') : null,
     })).slice(-10);
 
+    const toolsWithStepIds = params.toolExecutionPlan.map((step, index) => ({
+        ...step,
+        stepId: `step_${index + 1}`
+    }));
+
     const run: Run = {
       id: runId,
+      planId,
       sessionId: params.sessionId,
       userId: params.userId,
       connectionId: params.connectionId,
@@ -46,24 +53,24 @@ export class RunManager {
       contextMessages: truncatedContext,
       status: 'pending',
       startedAt: now,
-      tools: params.toolExecutionPlan,
       initiatedBy: 'assistant',
       parentRunId: '',
-      toolExecutionPlan: [],
+      toolExecutionPlan: toolsWithStepIds, // Correctly use toolExecutionPlan
       completedAt: ''
     };
 
-    logger.info(`Run object created in memory.`, { runId,  status: 'pending' });
+    logger.info(`Run object created in memory.`, { runId, planId, status: 'pending' });
     return run;
   }
 
   public static addToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-        const toolIndex = run.tools.findIndex((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
+        const toolIndex = run.toolExecutionPlan.findIndex((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
         if (toolIndex !== -1) {
-            run.tools[toolIndex].status = result.status;
-            run.tools[toolIndex].result = result.data; // <<< Store the result data
-            run.tools[toolIndex].error = result.error;
-            run.tools[toolIndex].finishedAt = new Date().toISOString();
+            run.toolExecutionPlan[toolIndex].status = result.status;
+            // This seems incorrect, result is the whole ToolResult, not just data.
+            // Let's assume the intention was to store the whole result.
+            run.toolExecutionPlan[toolIndex].result = result; 
+            run.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
         }
         return run;
     }
@@ -72,7 +79,7 @@ export class RunManager {
    * Updates a tool's metadata within a run when its execution begins.
    */
   public static startToolExecution(run: Run, toolCallId: string): Run {
-    const toolMeta = run.tools.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
+    const toolMeta = run.toolExecutionPlan.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
     if (toolMeta) {
       toolMeta.startedAt = new Date().toISOString();
       run.status = 'running';
@@ -86,7 +93,7 @@ export class RunManager {
    * The calling context (e.g., index.ts) is responsible for sending WebSocket updates.
    */
   public static recordToolResult(run: Run, toolCallId: string, result: ToolResult): Run {
-    const toolMeta = run.tools.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
+    const toolMeta = run.toolExecutionPlan.find((t: { toolCall: { id: string; }; }) => t.toolCall.id === toolCallId);
 
     if (!toolMeta) {
       logger.warn(`Could not find tool with toolCallId "${toolCallId}" in run "${run.id}" to record result.`);
@@ -114,7 +121,7 @@ export class RunManager {
    * Finalizes a Run. This should be called after the last expected event.
    */
   public static finalizeRun(run: Run): Run {
-    const allToolsCompleted = run.tools.every((t: { result: any; }) => !!t.result);
+    const allToolsCompleted = run.toolExecutionPlan.every((t: { result: any; }) => !!t.result);
     if (!allToolsCompleted) {
         logger.info(`Run ${run.id} will not be finalized yet; waiting for more tool results.`);
         return run;

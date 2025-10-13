@@ -16,6 +16,7 @@ export interface ToolResult {
 }
 
 export interface ToolExecutionStep {
+  stepId: string;
   toolCall: ToolCall;
   status: string; // e.g., 'pending', 'executing', 'completed', 'failed'
   startedAt: string;
@@ -26,8 +27,8 @@ export interface ToolExecutionStep {
 export type RunStatus = 'pending' | 'completed' | 'failed' | 'running' | 'success'| 'partial_success';
 
 export interface Run {
+  planId: string;
   completedAt: string;
-  tools: any;
   id: string;
   sessionId: string;
   userId: string;

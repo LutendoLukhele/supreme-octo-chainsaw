@@ -15,77 +15,118 @@ interface NangoResponse {
 export class NangoService {
   private nango: Nango;
   private logger: winston.Logger;
+  private connectionWarmCache: Map<string, number> = new Map(); // connectionId -> lastWarmedTimestamp
 
   constructor() {
     if (!CONFIG.NANGO_SECRET_KEY) {
         throw new Error("Configuration error: NANGO_SECRET_KEY is missing.");
     }
-    this.logger = winston.createLogger({ /* ... */ });
+    this.logger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(), // Adds a timestamp to each log message
+        winston.format.json()       // Ensures the log output is in JSON format
+      ),
+      defaultMeta: { service: 'NangoService' }, // Automatically adds {'service': 'NangoService'} to every log
+      transports: [
+        new winston.transports.Console(), // Directs log output to the console
+      ],
+    });
     this.nango = new Nango({ secretKey: CONFIG.NANGO_SECRET_KEY });
     this.logger.info(`NangoService initialized.`);
   }
 
-  public async triggerGenericNangoAction(
-  providerConfigKey: string,
-  connectionId: string,
-  actionName: string, // e.g., 'create-meeting'
-  actionPayload: Record<string, any>
-): Promise<any> { // Using `any` for a generic response type
-  this.logger.info('Triggering generic Nango action', { providerConfigKey, actionName });
+  // Connection warming to eliminate cold start penalties
+  public async warmConnection(
+    providerConfigKey: string,
+    connectionId: string,
+    force: boolean = false
+  ): Promise<boolean> {
+    const cacheKey = `${providerConfigKey}:${connectionId}`;
+    const lastWarmed = this.connectionWarmCache.get(cacheKey);
+    const WARM_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-  try {
-    const response = await this.nango.triggerAction(
-        providerConfigKey,
-        connectionId,
-        actionName,
-        actionPayload
-    );
-    return response;
-  } catch (error: any) {
-    this.logger.error('Generic Nango action failed', {
-      error: error.message || 'An unknown error occurred',
-      actionName,
-    });
-    throw error;
-  }
-}
-
-  // --- FIX: This method is now fully aligned with all Salesforce Nango scripts ---
-  async triggerSalesforceAction(
-  providerConfigKey: string, 
-  connectionId: string,
-  actionPayload: Record<string, any>
-): Promise<NangoResponse> {
-    
-    this.logger.info('Executing Salesforce action', { providerConfigKey, connectionId: '***', operation: actionPayload.operation, entityType: actionPayload.entityType });
-
-    let actionName: string;
-
-    // Determine the action name from the payload's operation
-    switch (actionPayload.operation) {
-      case 'create':
-        actionName = 'salesforce-create-entity';
-        break;
-      case 'update':
-        actionName = 'salesforce-update-entity';
-        break;
-      case 'fetch':
-        actionName = 'salesforce-fetch-entity';
-        break;
-      default:
-        const errorMessage = `Unsupported Salesforce operation: ${actionPayload.operation}`;
-        this.logger.error(errorMessage, { operation: actionPayload.operation });
-        throw new Error(errorMessage);
+    // Skip if recently warmed (unless forced)
+    if (!force && lastWarmed && (Date.now() - lastWarmed) < WARM_CACHE_TTL) {
+      this.logger.debug('Connection already warm', { providerConfigKey, connectionId: '***' });
+      return true;
     }
 
-    this.logger.info('Triggering Nango action via direct API call', { actionName });
+    const startTime = Date.now();
+    try {
+      let pingEndpoint: string;
+
+      // Provider-specific lightweight ping endpoints
+      switch (providerConfigKey) {
+        case 'gmail':
+        case 'google':
+          pingEndpoint = '/gmail/v1/users/me/profile';
+          break;
+        case 'salesforce':
+          pingEndpoint = '/services/data/v60.0/sobjects';
+          break;
+        default:
+          pingEndpoint = '/';
+      }
+
+      // Use Nango SDK to call a lightweight GET if available; fall back to direct trigger
+      try {
+        await this.nango.get({ endpoint: pingEndpoint, connectionId, providerConfigKey });
+      } catch (sdkErr) {
+        // If SDK GET fails, try a very lightweight action-trigger (if configured)
+        this.logger.debug('Nango SDK ping failed; attempting lightweight action trigger', { providerConfigKey });
+        await axios.post(
+          'https://api.nango.dev/action/trigger',
+          { action_name: 'ping', input: {} },
+          {
+            headers: {
+              'Authorization': `Bearer ${CONFIG.NANGO_SECRET_KEY}`,
+              'Provider-Config-Key': providerConfigKey,
+              'Connection-Id': connectionId,
+              'Content-Type': 'application/json'
+            }
+          }
+        ).catch(() => {
+          // ignore errors from fallback ping - warming may still succeed via other calls below
+        });
+      }
+
+      const duration = Date.now() - startTime;
+      this.connectionWarmCache.set(cacheKey, Date.now());
+
+      this.logger.info('Connection warmed successfully', {
+        providerConfigKey,
+        connectionId: '***',
+        duration
+      });
+      return true;
+
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      this.logger.warn('Connection warm failed', {
+        providerConfigKey,
+        connectionId: '***',
+        duration,
+        error: error.message
+      });
+      return false;
+    }
+  }
+
+  public async triggerGenericNangoAction(
+    providerConfigKey: string,
+    connectionId: string,
+    actionName: string, // e.g., 'send-email'
+    actionPayload: Record<string, any>
+  ): Promise<any> {
+    this.logger.info('Triggering generic Nango action via direct API', { providerConfigKey, actionName });
 
     try {
+      // FIX: Replaced the Nango SDK call with a direct axios.post call for consistency
       const response = await axios.post(
         'https://api.nango.dev/action/trigger',
         {
           action_name: actionName,
-          // The 'input' is now the clean payload passed directly into this function
           input: actionPayload
         },
         {
@@ -99,20 +140,118 @@ export class NangoService {
       );
       
       this.logger.info('Nango direct API call successful', { actionName });
-      return response.data as NangoResponse;
+      return response.data;
 
     } catch (error: any) {
-      this.logger.error('Nango direct API call failed', { 
-        error: error.response?.data || error.message, 
-        actionName 
+      this.logger.error('Generic Nango action failed', {
+        error: error.response?.data?.message || error.message,
+        actionName,
       });
-      // Re-throw the error with details from Nango's response if available
+      // Re-throw a more informative error
       throw new Error(error.response?.data?.message || `Request failed with status code ${error.response?.status}`);
     }
   }
 
+  // --- FIX: This method is now fully aligned with all Salesforce Nango scripts ---
+  // Replace the existing triggerSalesforceAction method with this:
+async triggerSalesforceAction(
+  providerConfigKey: string,
+  connectionId: string,
+  actionPayload: Record<string, any>
+): Promise<NangoResponse> {
+  // Determine the Nango action name based on the operation
+  let actionName: string;
+  switch (actionPayload.operation) {
+    case 'fetch':
+      actionName = 'salesforce-fetch-entity';
+      break;
+    case 'create':
+      actionName = 'salesforce-create-entity';
+      break;
+    case 'update':
+      actionName = 'salesforce-update-entity';
+      break;
+    default:
+      const msg = `Unsupported Salesforce operation: ${actionPayload.operation}`;
+      this.logger.error(msg, { actionPayload });
+      throw new Error(msg);
+  }
+
+  this.logger.info('Triggering Salesforce action via Nango action trigger', { 
+    actionName, 
+    input: actionPayload 
+  });
+
+  try {
+    // Ensure connection is warm before executing
+    await this.warmConnection(providerConfigKey, connectionId);
+    
+    // Use the exact same pattern as fetchEmails
+    const response = await axios.post(
+      'https://api.nango.dev/action/trigger',
+      {
+        action_name: actionName,
+        input: actionPayload 
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.NANGO_SECRET_KEY}`,
+          'Provider-Config-Key': providerConfigKey,
+          'Connection-Id': connectionId,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    this.logger.info('Salesforce action executed successfully', { actionName });
+    return response.data as NangoResponse;
+
+  } catch (error: any) {
+    this.logger.error('Salesforce action failed', { 
+      error: error.response?.data || error.message, 
+      actionName 
+    });
+    // Re-throw a descriptive error matching fetchEmails pattern
+    throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+  }
+}
+
+  // --- ADD THIS NEW METHOD ---
+  public async sendEmail(
+    providerConfigKey: string,
+    connectionId: string,
+    payload: { from: string; to: string; subject: string; body: string; headers?: Record<string, any> }
+  ): Promise<any> {
+    const endpoint = 'https://api.nango.dev/v1/emails';
+    this.logger.info('Calling Nango custom email endpoint', { endpoint });
+
+    try {
+      const response = await axios.post(
+        endpoint,
+        payload, // For custom endpoints, the payload is sent directly as the body
+        {
+          headers: {
+            'Authorization': `Bearer ${CONFIG.NANGO_SECRET_KEY}`,
+            'Provider-Config-Key': providerConfigKey,
+            'Connection-Id': connectionId,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      this.logger.info('Nango custom email endpoint call successful');
+      return response.data;
+
+    } catch (error: any) {
+      this.logger.error('Nango custom email endpoint call failed', {
+        error: error.response?.data || error.message,
+      });
+      throw new Error(error.response?.data?.message || `Request to custom endpoint failed with status ${error.response?.status}`);
+    }
+  }
+
   // --- FIX: Aligned with fetch-emails.ts script ---
-   async fetchEmails(
+  async fetchEmails(
     providerConfigKey: string,
     connectionId: string,
     input: any // This is the action payload from the tool call
@@ -121,6 +260,9 @@ export class NangoService {
     this.logger.info('Fetching emails via Nango action trigger', { actionName, input });
 
     try {
+      // Ensure connection is warm before fetching
+      await this.warmConnection(providerConfigKey, connectionId);
+      
       // Switched from axios.get to axios.post
       const response = await axios.post(
         'https://api.nango.dev/action/trigger', // Use the standard action trigger endpoint
@@ -152,7 +294,7 @@ export class NangoService {
     }
   }
 
-   // --- FIX: Aligned with events.ts script ---
+  // --- FIX: Aligned with events.ts script ---
   async fetchCalendarEvents(
     providerConfigKey: string,
     connectionId: string,
@@ -161,6 +303,7 @@ export class NangoService {
     const actionName = 'fetch-events';
     this.logger.info('Fetching calendar events via Nango', { actionName, args });
     try {
+      await this.warmConnection(providerConfigKey, connectionId);
       const response = await this.nango.triggerAction(
         providerConfigKey, connectionId, actionName, args
       );
@@ -180,6 +323,7 @@ export class NangoService {
     const actionName = 'create-event';
     this.logger.info('Creating calendar event via Nango', { actionName });
     try {
+      await this.warmConnection(providerConfigKey, connectionId);
       const response = await this.nango.triggerAction(
         providerConfigKey, connectionId, actionName, args
       );
@@ -188,5 +332,25 @@ export class NangoService {
       this.logger.error('Failed to create calendar event', { error: error.message || error });
       throw error;
     }
+  }
+
+  // Clear warm cache (useful for testing or connection issues)
+  public clearWarmCache(providerConfigKey?: string, connectionId?: string) {
+    if (providerConfigKey && connectionId) {
+      const cacheKey = `${providerConfigKey}:${connectionId}`;
+      this.connectionWarmCache.delete(cacheKey);
+      this.logger.info('Cleared warm cache for specific connection', { providerConfigKey, connectionId: '***' });
+    } else {
+      this.connectionWarmCache.clear();
+      this.logger.info('Cleared all warm cache entries');
+    }
+  }
+
+  // Get connection health status
+  public getConnectionHealth(): { totalConnections: number, cacheSize: number } {
+    return {
+      totalConnections: this.connectionWarmCache.size,
+      cacheSize: this.connectionWarmCache.size
+    };
   }
 }

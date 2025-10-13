@@ -1,18 +1,17 @@
-// src/services/conversation/ConversationService.ts
+// Improved ConversationService.ts with proper tool response streaming
+
 import { EventEmitter } from 'events';
 import Groq from 'groq-sdk';
 import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
-import { ConversationConfig, Message, LLMResponse } from './types';
-import { ToolConfigManager } from '../tool/ToolConfigManager'; // Import manager
-import { MarkdownStreamParser } from '@lixpi/markdown-stream-parser'; // Ensure this import is correct
+import { ConversationConfig, Message, LLMResponse, MessageType } from './types';
+import { ToolConfigManager } from '../tool/ToolConfigManager';
+import { MarkdownStreamParser } from '@lixpi/markdown-stream-parser';
 import { StreamChunk } from '../stream/types';
-// Import new prompt templates
 import { MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE } from './prompts/mainConversationalPrompt';
 import { MARKDOWN_ARTEFACT_SYSTEM_PROMPT_TEMPLATE } from './prompts/markdownArtefactPrompt';
 import { DEDICATED_TOOL_CALL_SYSTEM_PROMPT_TEMPLATE } from './prompts/dedicatedToolCallPrompt';
 
-// Define LixpiParsedSegment if not globally available or exported by the library
 interface LixpiParsedSegment {
   status: 'STREAMING' | 'END_STREAM' | string;
   segment?: {
@@ -24,13 +23,25 @@ interface LixpiParsedSegment {
   };
 }
 
-// New return type for the main processing method
 export interface ProcessedMessageResult {
     toolCalls: boolean;
     aggregatedToolCalls: Array<{
-      function: any; id?: string; name: string; arguments: Record<string, any>; streamType: string 
+      function: any; 
+      id?: string; 
+      name: string; 
+      arguments: Record<string, any>; 
+      streamType: string
     }>;
-    conversationalResponse: string; // <-- FIX: Add this property
+    conversationalResponse: string;
+}
+
+interface ConversationalStreamResult {
+    text: string;
+    hasToolCalls: boolean;
+}
+
+interface ToolCallStreamResult {
+    hasToolCalls: boolean;
 }
 
 const PLANNER_META_TOOL = {
@@ -56,7 +67,6 @@ const PLANNER_META_TOOL = {
   }
 };
 
-
 const logger = winston.createLogger({
     level: 'info',
     format: winston.format.combine(
@@ -64,14 +74,12 @@ const logger = winston.createLogger({
       winston.format.json()
     ),
     transports: [new winston.transports.Console()],
-  });
+});
 
-
-
-  const KEYWORD_TO_CATEGORY_MAP: Record<string, string> = {
+const KEYWORD_TO_CATEGORY_MAP: Record<string, string> = {
     'email': 'Email',
     'emails': 'Email',
-    'send': 'Email', // Can be refined to include other categories if needed
+    'send': 'Email',
     'calendar': 'Calendar',
     'event': 'Calendar',
     'meeting': 'Calendar',
@@ -94,9 +102,6 @@ function getRelevantToolCategories(userInput: string): string[] {
     }
 
     if (detectedCategories.size === 0) {
-        // If no keywords are found, fall back to a default set.
-        // An empty array would mean only 'Meta' tools are sent.
-        // Sending all is a safe default during development.
         return ['Email', 'Calendar', 'CRM'];
     }
 
@@ -104,7 +109,6 @@ function getRelevantToolCategories(userInput: string): string[] {
 }
 
 export class ConversationService extends EventEmitter {
-    [x: string]: any;
     private client: Groq;
     private model: string;
     private maxTokens: number;
@@ -117,20 +121,17 @@ export class ConversationService extends EventEmitter {
         this.client = new Groq({ apiKey: config.groqApiKey });
         this.model = config.model;
         this.maxTokens = config.maxTokens;
-
-        // --- FIX: Call the new, argument-less constructor ---
         this.toolConfigManager = new ToolConfigManager();
         logger.info('ToolConfigManager initialized within ConversationService.');
     }
 
-    /**
-     * Processes the user message, runs internal LLM streams, and returns aggregated tool calls.
-     * Text, markdown, and tool call announcements are streamed to the client via 'send_chunk' events.
-     */
     public async processMessageAndAggregateResults(
-        userMessage: string, sessionId: string, incomingMessageId?: string, _userId?: string
+        userMessage: string, 
+        sessionId: string, 
+        incomingMessageId?: string, 
+        _userId?: string
     ): Promise<ProcessedMessageResult> {
-        const messageProcessingId = uuidv4()as any;
+        const messageProcessingId = uuidv4();
         const currentMessageId = incomingMessageId || uuidv4();
         logger.info('Processing message, will aggregate results', { sessionId });
 
@@ -147,55 +148,242 @@ export class ConversationService extends EventEmitter {
                 return null;
             }
             return {
-                type: "function",
-                function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: inputSchema
-                }
+                type: "function" as const,
+                function: { name: tool.name, description: tool.description, parameters: inputSchema }
             };
         }).filter(Boolean);
 
-
-        console.log('Tools being processed:');
-
         const initialUserQuery = history.find(m => m.role === 'user')?.content || userMessage;
-        const aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'] = [] as any;
-        
-        let conversationalResponseText = "";
+        const aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'] = [];
 
-        // --- FIX: The argument list now has the correct 7 arguments ---
+        let conversationalResponseText = "";
+        let hasConversationalToolCalls = false;
+        let hasToolStreamCalls = false;
+        
+        // Run both streams in parallel
         const conversationalStreamPromise = this.runConversationalStream(
-            userMessage,                 // currentUserMessage
-            initialUserQuery,          // initialUserQuery
-            sessionId,                 // sessionId
-            currentMessageId,          // currentMessageId
-            messageProcessingId,       // messageProcessingId
-            filteredGroqTools,         // toolsForThisStream
-            [...history],              // historyForThisStream
-            aggregatedToolCallsOutput
-        ).then(responseText => {
-            conversationalResponseText = responseText;
+            userMessage, initialUserQuery, sessionId, currentMessageId,
+            messageProcessingId, filteredGroqTools, [...history], aggregatedToolCallsOutput
+        ).then(result => {
+            conversationalResponseText = result.text;
+            hasConversationalToolCalls = result.hasToolCalls;
         });
 
         const toolCallStreamPromise = this.runToolCallStream(
-            userMessage,
-            sessionId,
-            currentMessageId,
-            messageProcessingId,
-            [...history],
-            aggregatedToolCallsOutput,
-            filteredGroqTools
-        );
+            userMessage, sessionId, currentMessageId, messageProcessingId,
+            [...history], aggregatedToolCallsOutput, filteredGroqTools
+        ).then(result => {
+            hasToolStreamCalls = result.hasToolCalls;
+        });
+        
         await Promise.allSettled([conversationalStreamPromise, toolCallStreamPromise]);
 
-        logger.info('All ConversationService streams have settled.', { sessionId });
-        
+        // FIXED: Only show tool execution message if there's NO conversational response
+        const hasAnyToolCalls = aggregatedToolCallsOutput.length > 0;
+
+        if (hasAnyToolCalls && conversationalResponseText.trim().length === 0) {
+            // Only stream tool execution message when there's NO actual conversational response
+            const toolExecutionMessageId = uuidv4();
+            await this.streamToolExecutionResponse(
+                aggregatedToolCallsOutput,
+                userMessage,
+                sessionId,
+                toolExecutionMessageId
+            );
+            logger.info('No conversational text - showing tool execution message', { sessionId });
+        } else if (hasAnyToolCalls && conversationalResponseText.trim().length > 0) {
+            logger.info('Tool calls WITH conversational text - showing actual conversational response', { 
+                sessionId,
+                responseLength: conversationalResponseText.length 
+            });
+        }
+
+        logger.info('All ConversationService streams have settled.', {
+            sessionId,
+            totalToolCalls: aggregatedToolCallsOutput.length,
+            conversationalResponseLength: conversationalResponseText.length
+        });
+
         return {
             toolCalls: aggregatedToolCallsOutput.length > 0,
             aggregatedToolCalls: aggregatedToolCallsOutput,
             conversationalResponse: conversationalResponseText
         };
+    }
+
+    private async streamToolExecutionResponse(
+        toolCalls: ProcessedMessageResult['aggregatedToolCalls'],
+        userRequest: string,
+        sessionId: string,
+        messageId: string
+    ) {
+        logger.info('Streaming tool execution response', { 
+            toolCount: toolCalls.length, 
+            tools: toolCalls.map(tc => tc.name),
+            messageId 
+        });
+        
+        // Build detailed descriptions
+        const toolDescriptions = toolCalls.map(tc => {
+            const toolConfig = this.toolConfigManager.getToolByName(tc.name);
+            const friendlyName = this.getToolFriendlyName(tc.name);
+            const paramDetails = this.formatToolParameters(tc.name, tc.arguments);
+            return `${friendlyName}${paramDetails}`;
+        }).join(' and ');
+        
+        const executionPrompt = `You are acknowledging that you're executing specific tool actions. The user requested: "${userRequest}"
+
+You are executing: ${toolDescriptions}
+
+Generate a brief, natural response (max 40 words) that specifically mentions what you're doing.
+Examples:
+- "I'm fetching your recent emails for you."
+- "I'm sending that email to john@example.com with the Q3 report."
+- "Creating a meeting with Sarah tomorrow at 2 PM."
+
+Be specific and natural. Don't just say "I'm working on it" - say WHAT you're doing.`;
+        
+        try {
+            // Start the new message stream
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: messageId,
+                messageType: MessageType.TOOL_EXECUTION,
+                isToolExecution: true
+            });
+
+            const responseStream = await this.client.chat.completions.create({
+                model: 'llama-3.1-8b-instant',
+                messages: [{ role: 'system', content: executionPrompt }],
+                max_tokens: 50,
+                stream: true,
+                temperature: 0.6,
+            });
+
+            let fullText = '';
+            for await (const chunk of responseStream) {
+                const contentDelta = chunk.choices[0]?.delta?.content;
+                if (contentDelta) {
+                    fullText += contentDelta;
+                    this.emit('send_chunk', sessionId, {
+                        type: 'conversational_text_segment',
+                        content: { 
+                            status: 'STREAMING', 
+                            segment: { 
+                                segment: contentDelta,
+                                styles: [],
+                                type: 'text'
+                            } 
+                        },
+                        messageId: messageId,
+                        messageType: MessageType.TOOL_EXECUTION,
+                        isToolExecution: true
+                    });
+                }
+            }
+
+            // End the stream
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: messageId,
+                isFinal: true,
+                messageType: MessageType.TOOL_EXECUTION,
+                isToolExecution: true
+            });
+
+            this.emit('send_chunk', sessionId, { 
+                type: 'stream_end', 
+                streamType: 'conversational',
+                messageId: messageId, 
+                isFinal: true 
+            });
+            
+            logger.info('Streamed tool execution response', { 
+                sessionId, 
+                messageId, 
+                content: fullText,
+                toolsExecuted: toolCalls.map(tc => tc.name)
+            });
+            
+            // Add to history
+            const history = this.getHistory(sessionId);
+            history.push({
+                role: 'assistant',
+                content: fullText,
+                metadata: { 
+                    type: 'tool_execution', 
+                    tools: toolCalls,
+                    messageId 
+                }
+            } as Message);
+            this.conversationHistory.set(sessionId, history);
+            
+        } catch (error) {
+            logger.error('Failed to stream tool execution response', { error, sessionId });
+            // Fallback
+            const fallbackText = `Executing ${toolCalls.map(tc => this.getToolFriendlyName(tc.name)).join(' and ')} now.`;
+            
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: messageId,
+                messageType: MessageType.TOOL_EXECUTION
+            });
+            
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { 
+                    status: 'STREAMING', 
+                    segment: { segment: fallbackText, styles: [], type: 'text' } 
+                },
+                messageId: messageId,
+                messageType: MessageType.TOOL_EXECUTION
+            });
+            
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: messageId,
+                isFinal: true,
+                messageType: MessageType.TOOL_EXECUTION
+            });
+
+            this.emit('send_chunk', sessionId, { 
+                type: 'stream_end', 
+                streamType: 'conversational', 
+                messageId: messageId, 
+                isFinal: true 
+            });
+        }
+    }
+
+    private getToolFriendlyName(toolName: string): string {
+        const friendlyNames: Record<string, string> = {
+            'fetch_emails': 'fetching emails',
+            'sendEmail': 'sending an email',
+            'createCalendarEvent': 'creating a calendar event',
+            'updateSalesforceContact': 'updating Salesforce contact',
+            'searchContacts': 'searching contacts',
+        };
+        return friendlyNames[toolName] || toolName.replace(/_/g, ' ');
+    }
+
+    private formatToolParameters(toolName: string, params: Record<string, any>): string {
+        if (!params || Object.keys(params).length === 0) return '';
+        
+        // Custom formatting based on tool
+        switch(toolName) {
+            case 'sendEmail':
+                return params.to ? ` to ${params.to}` : '';
+            case 'createCalendarEvent':
+                return params.title ? ` "${params.title}"` : '';
+            case 'fetch_emails':
+                return params.count ? ` (last ${params.count})` : '';
+            default:
+                return '';
+        }
     }
 
     private async runConversationalStream(
@@ -206,8 +394,8 @@ export class ConversationService extends EventEmitter {
         messageProcessingId: string,
         _toolsForThisStream: any[],
         historyForThisStream: Message[],
-        aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'] // To collect tool calls
-    ) {
+        aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls']
+    ): Promise<ConversationalStreamResult> {
         const streamId = `conversational_${messageProcessingId}`;
         logger.info('Starting main conversational stream', { sessionId, streamId });
 
@@ -227,7 +415,8 @@ export class ConversationService extends EventEmitter {
                     content: parsedSegment,
                     messageId: currentMessageId,
                     isFinal: isLastSegmentFromParser,
-                    streamType: 'conversational'
+                    streamType: 'conversational',
+                    messageType: MessageType.STANDARD
                 } as StreamChunk);
                 if (isLastSegmentFromParser) {
                     if (unsubscribeFromParser) { unsubscribeFromParser(); unsubscribeFromParser = null; }
@@ -247,25 +436,15 @@ export class ConversationService extends EventEmitter {
             ];
 
             const toolsForThisStream = this.toolConfigManager.getGroqToolsDefinition() || [];
-
-        // 2. --- THIS IS THE FIX: Dynamically inject the planner meta-tool ---
-        // Since this is the "smart" stream, we always give it the option to escalate to the planner.
-        toolsForThisStream.push(PLANNER_META_TOOL);
-
-
-            // Add this debug log:
-            logger.debug('Tools being sent to Groq API (Conversational Stream):', {
-                sessionId, 
-                messageId: currentMessageId,
-                tools: JSON.stringify(toolsForThisStream, null, 2) // Stringify for readability
-            });
+            toolsForThisStream.push(PLANNER_META_TOOL);
+            
             const responseStream = await this.client.chat.completions.create({
                 model: this.model,
                 messages: messagesForApi as any,
                 max_tokens: this.maxTokens,
                 tools: toolsForThisStream,
                 stream: true,
-                temperature: 0.5, // More conversational
+                temperature: 0.5,
             });
 
             for await (const chunk of responseStream) {
@@ -295,7 +474,7 @@ export class ConversationService extends EventEmitter {
                 parser.stopParsing();
             }
 
-            if (accumulatedToolCalls) {
+            if (accumulatedToolCalls && accumulatedToolCalls.length > 0) {
                 accumulatedToolCalls.forEach(tc => {
                     if (tc.id && tc.function.name) {
                         try {
@@ -306,19 +485,18 @@ export class ConversationService extends EventEmitter {
                                 streamType: 'conversational',
                                 function: undefined
                             });
-                            logger.info('Conversational stream collected potential_tool_call', { sessionId, streamId, toolCallId: tc.id, name: tc.function.name });
+                            logger.info('Conversational stream collected potential_tool_call', { 
+                                sessionId, 
+                                streamId, 
+                                toolCallId: tc.id, 
+                                name: tc.function.name 
+                            });
                         } catch (parseError: any) {
-                            logger.error("Failed to parse tool arguments from conversational stream for aggregation", { toolCallId: tc.id, args: tc.function.arguments, error: parseError.message });
+                            logger.error("Failed to parse tool arguments", { 
+                                toolCallId: tc.id, 
+                                error: parseError.message 
+                            });
                         }
-                        // Still emit for client visibility / original flow if desired
-                        this.emit('send_chunk', sessionId, {
-                            type: 'potential_tool_call', 
-                            content: { id: tc.id, function: { name: tc.function.name, arguments: tc.function.arguments } },
-                            messageId: currentMessageId,
-                            toolCallId: tc.id,
-                            isFinal: false,
-                            streamType: 'conversational'
-                        } as StreamChunk);
                     }
                 });
             }
@@ -348,22 +526,30 @@ export class ConversationService extends EventEmitter {
                 if (parser.parsing) parser.stopParsing();
                 MarkdownStreamParser.removeInstance(parserInstanceId);
             }
-            this.emit('send_chunk', sessionId, { type: 'stream_end', streamType: 'conversational', messageId: currentMessageId, isFinal: true } as StreamChunk);
+            this.emit('send_chunk', sessionId, { 
+                type: 'stream_end', 
+                streamType: 'conversational', 
+                messageId: currentMessageId, 
+                isFinal: true 
+            } as StreamChunk);
             logger.info('Conversational stream processing complete.', { sessionId, streamId });
         }
 
-        return accumulatedText;
+        return {
+            text: accumulatedText,
+            hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0)
+        };
     }
 
-     private async runToolCallStream(
+    private async runToolCallStream(
         currentUserMessage: string,
         sessionId: string,
         currentMessageId: string,
         messageProcessingId: string,
-        historyForThisStream: Message[], // This parameter was missing
+        historyForThisStream: Message[],
         aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'],
         toolsForThisStream: any[]
-    ) {
+    ): Promise<ToolCallStreamResult> {
         const streamId = `tool_call_${messageProcessingId}`;
         logger.info('Starting dedicated tool identification stream', { sessionId, streamId });
         
@@ -374,13 +560,12 @@ export class ConversationService extends EventEmitter {
             
             const messagesForApi: Message[] = [
                 { role: 'system', content: systemPromptContent },
-                // The tool call stream only needs the current message, not the full history
                 { role: 'user', content: currentUserMessage } 
             ];
 
             if (!toolsForThisStream || toolsForThisStream.length === 0) {
-                logger.warn('Tool call stream has no tools to process after filtering.', { sessionId });
-                return;
+                logger.warn('Tool call stream has no tools to process', { sessionId });
+                return { hasToolCalls: false };
             }
 
             const responseStream = await this.client.chat.completions.create({
@@ -410,9 +595,13 @@ export class ConversationService extends EventEmitter {
                                 streamType: 'tool_call',
                                 function: undefined
                             });
-                            logger.info('Dedicated tool stream collected tool_call', { name: tc.function.name });
+                            logger.info('Dedicated tool stream collected tool_call', { 
+                                name: tc.function.name 
+                            });
                         } catch (e) {
-                            logger.error("Failed to parse tool arguments from dedicated stream", { args: tc.function.arguments });
+                            logger.error("Failed to parse tool arguments", { 
+                                args: tc.function.arguments 
+                            });
                         }
                     }
                 });
@@ -422,99 +611,10 @@ export class ConversationService extends EventEmitter {
         } finally {
             logger.info('Tool call stream processing complete.', { sessionId, streamId });
         }
-    }
 
-    private async runMarkdownArtefactStream(
-        currentUserMessage: string,
-        initialUserQuery: string,
-        sessionId: string,
-        currentMessageId: string,
-        messageProcessingId: string,
-        historyForThisStream: Message[]
-    ) {
-        const streamId = `markdown_artefact_${messageProcessingId}`;
-        logger.info('Starting Markdown artefact stream', { sessionId, streamId });
-
-        const parserInstanceId = `md_artefact_parser_${sessionId}_${currentMessageId}`;
-        const parser = MarkdownStreamParser.getInstance(parserInstanceId);
-        let unsubscribeFromParser: (() => void) | null = null;
-        let parserSuccessfullyCleanedUp = false;
-
-        try {
-            unsubscribeFromParser = parser.subscribeToTokenParse((parsedSegment: LixpiParsedSegment) => {
-                const isLastSegmentFromParser = parsedSegment.status === 'END_STREAM';
-                this.emit('send_chunk', sessionId, {
-                    type: 'markdown_artefact_segment',
-                    content: parsedSegment,
-                    messageId: currentMessageId,
-                    isFinal: isLastSegmentFromParser,
-                    streamType: 'markdown_artefact'
-                } as StreamChunk);
-
-                if (isLastSegmentFromParser) {
-                    if (unsubscribeFromParser) { unsubscribeFromParser(); unsubscribeFromParser = null; }
-                    MarkdownStreamParser.removeInstance(parserInstanceId);
-                    parserSuccessfullyCleanedUp = true;
-                }
-            });
-            parser.startParsing();
-
-            const historySnippet = this.prepareHistoryForLLM(historyForThisStream)
-                .slice(-3) // Last 3 turns for snippet
-                .map(m => `${m.role}: ${m.content?.substring(0, 75) || (m.tool_calls ? 'tool_call' : 'no text content')}...`)
-                .join('\n');
-
-            const systemPromptContent = MARKDOWN_ARTEFACT_SYSTEM_PROMPT_TEMPLATE
-                .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage)
-                .replace('{{CONVERSATION_HISTORY_SNIPPET}}', historySnippet);
-
-            const messagesForApi: Message[] = [{ role: 'system', content: systemPromptContent }];
-
-            const responseStream = await this.client.chat.completions.create({
-                model: this.model,
-                messages: messagesForApi as any,
-                max_tokens: 150, // For 50-100 token artefact, plus buffer
-                stream: true,
-                temperature: 0.3,
-            });
-
-            for await (const chunk of responseStream) {
-                const contentDelta = chunk.choices[0]?.delta?.content;
-                if (contentDelta) {
-                    if (parser.parsing && !parserSuccessfullyCleanedUp) {
-                        parser.parseToken(contentDelta);
-                    }
-                }
-                const finishReason = chunk.choices[0]?.finish_reason;
-                if (finishReason) {
-                    logger.info(`Markdown artefact stream finished. Reason: ${finishReason}`, { sessionId, streamId, finishReason });
-                    break;
-                }
-            }
-            if (parser.parsing && !parserSuccessfullyCleanedUp) {
-                parser.stopParsing();
-            }
-
-        } catch (error: any) {
-            logger.error('Error in Markdown artefact stream', { error: error.message, sessionId, streamId });
-            this.emit('send_chunk', sessionId, {
-                type: 'error',
-                content: "Error in Markdown thoughts stream.",
-                messageId: currentMessageId,
-                isFinal: true,
-                streamType: 'markdown_artefact'
-            } as StreamChunk);
-            if (parser.parsing && !parserSuccessfullyCleanedUp) parser.stopParsing();
-        } finally {
-             if (!parserSuccessfullyCleanedUp) {
-                if (unsubscribeFromParser) unsubscribeFromParser();
-                if (parser.parsing) parser.stopParsing();
-                MarkdownStreamParser.removeInstance(parserInstanceId);
-            }
-            this.emit('send_chunk', sessionId, { type: 'stream_end', streamType: 'markdown_artefact', messageId: currentMessageId, isFinal: true } as StreamChunk);
-            logger.info('Markdown artefact stream processing complete.', { sessionId, streamId });
-        }
+        return {
+            hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0)
+        };
     }
 
     private accumulateToolCallDeltas(
@@ -524,10 +624,11 @@ export class ConversationService extends EventEmitter {
         for (const toolCallDelta of toolCallDeltas) {
             if (typeof toolCallDelta.index === 'number') {
                 while (currentToolCalls.length <= toolCallDelta.index) {
-                    currentToolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
-                }
-                if (!currentToolCalls[toolCallDelta.index]) { // Should not happen due to while loop
-                     currentToolCalls[toolCallDelta.index] = { id: toolCallDelta.id || '', type: 'function', function: { name: '', arguments: '' } };
+                    currentToolCalls.push({ 
+                        id: '', 
+                        type: 'function', 
+                        function: { name: '', arguments: '' } 
+                    });
                 }
                 
                 const currentFn = currentToolCalls[toolCallDelta.index].function;
@@ -540,7 +641,7 @@ export class ConversationService extends EventEmitter {
                 if (toolCallDelta.function?.arguments) {
                     currentFn.arguments += toolCallDelta.function.arguments;
                 }
-                if (toolCallDelta.type) { // Should always be 'function'
+                if (toolCallDelta.type) {
                     currentToolCalls[toolCallDelta.index].type = toolCallDelta.type as 'function';
                 }
             }
@@ -554,161 +655,32 @@ export class ConversationService extends EventEmitter {
         );
         return this.trimHistory(filteredHistory);
     }
-    
-    private async handleConversationalMode(
-        currentUserMessage: string, // The most recent message from the user in this turn
-        initialUserQueryForMode: string, // The query that LLM decided was conversational
-        sessionId: string,
-        currentMessageId: string, // ID for the overall interaction cycle
-        history: Message[] // Current history up to this point
-    ): Promise<LLMResponse> {
-        const conversationalModeProcessingId = uuidv4(); // This method will be removed or heavily refactored
-        logger.info('Entering conversational mode handler', { sessionId, conversationalModeProcessingId, currentMessageId, initialUserQueryForMode, currentUserMessage });
 
-        const parserInstanceId = `conv_mode_${sessionId}_${currentMessageId}_${conversationalModeProcessingId}_parser`;
-        const parser = MarkdownStreamParser.getInstance(parserInstanceId);
-        let unsubscribeFromParser: (() => void) | null = null;
-        let parserSuccessfullyCleanedUp = false;
-
-        let fullTextResponse = '';
-        let accumulatedToolCallsFromConversational: Groq.Chat.Completions.ChatCompletionMessageToolCall[] | null = null;
-
-        try {
-            unsubscribeFromParser = parser.subscribeToTokenParse((parsedSegment: LixpiParsedSegment) => {
-                logger.debug('Markdown parser emitted segment for conversational mode', { parserInstanceId, status: parsedSegment.status, type: parsedSegment.segment?.type });
-                const isLastSegmentFromParser = parsedSegment.status === 'END_STREAM';
-                this.emit('send_chunk', sessionId, {
-                    type: 'parsed_markdown_segment',
-                    content: parsedSegment,
-                    messageId: currentMessageId,
-                    isFinal: isLastSegmentFromParser,
-                } as unknown as StreamChunk);
-                if (isLastSegmentFromParser) {
-                    logger.info('Markdown parser (conversational_mode) emitted END_STREAM. Cleaning up.', { parserInstanceId });
-                    if (unsubscribeFromParser) { unsubscribeFromParser(); unsubscribeFromParser = null; }
-                    MarkdownStreamParser.removeInstance(parserInstanceId);
-                    parserSuccessfullyCleanedUp = true;
-                }
-            });
-            parser.startParsing();
-
-            // This was the old way, now the main conversational stream handles this with its own prompt.
-            const conversationalPrompt = MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE // Example: using new main prompt
-                .replace('{{USER_INITIAL_QUERY}}', initialUserQueryForMode)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage);
-
-            const messagesForApi: Message[] = [
-                { role: 'system', content: conversationalPrompt },
-                ...history.filter(msg => msg.role !== 'system'), // Use current history, but replace system prompt
-                // The last user message is already in history
-            ];
-
-            // Tools available to this LLM: request_tool_execution and request_missing_parameters
-            // Assuming getGroqToolsDefinition() returns all tools, and the prompt guides the LLM.
-            // If ToolConfigManager needs to filter, this call would need adjustment.
-            const conversationalTools = this.toolConfigManager.getGroqToolsDefinition();
-            if (!conversationalTools || conversationalTools.length === 0) {
-                logger.warn(`Conversational mode LLM has no tools defined. Functionality will be limited.`, { sessionId });
-            }
-
-            const responseStream = await this.client.chat.completions.create({
-                model: this.model, // Or a different model for conversational tasks
-                messages: messagesForApi as any,
-                max_tokens: this.maxTokens,
-                tools: conversationalTools, // Only 'request_tool_execution'
-                stream: true,
-                temperature: 0.5, // Potentially higher for more creative/conversational responses
-            });
-
-            for await (const chunk of responseStream) {
-                const contentDelta = chunk.choices[0]?.delta?.content;
-                const toolCallsDelta = chunk.choices[0]?.delta?.tool_calls;
-
-                if (contentDelta) {
-                    fullTextResponse += contentDelta;
-                    if (parser.parsing && !parserSuccessfullyCleanedUp) {
-                        parser.parseToken(contentDelta);
-                    }
-                }
-                if (toolCallsDelta) {
-                    if (!accumulatedToolCallsFromConversational) accumulatedToolCallsFromConversational = [];
-                    for (const toolCallDelta of toolCallsDelta) {
-                        if (typeof toolCallDelta.index === 'number') {
-                             // Ensure the array is large enough
-                            while (accumulatedToolCallsFromConversational.length <= toolCallDelta.index) {
-                                accumulatedToolCallsFromConversational.push({ id: uuidv4(), type: 'function', function: { name: '', arguments: '' } });
-                            }
-                            if (!accumulatedToolCallsFromConversational[toolCallDelta.index]) {
-                                accumulatedToolCallsFromConversational[toolCallDelta.index] = { id: toolCallDelta.id || uuidv4(), type: 'function', function: { name: '', arguments: '' } };
-                            }
-                            const currentToolCall = accumulatedToolCallsFromConversational[toolCallDelta.index];
-                            if (toolCallDelta.id) currentToolCall.id = toolCallDelta.id;
-                            if (toolCallDelta.function?.name) currentToolCall.function.name = toolCallDelta.function.name;
-                            if (toolCallDelta.function?.arguments) currentToolCall.function.arguments += toolCallDelta.function.arguments;
-                        }
-                    }
-                }
-
-                 const finishReason = chunk.choices[0]?.finish_reason;
-                 if (finishReason) break; // stop, length, or tool_calls
-            }
-
-            if (parser.parsing && !parserSuccessfullyCleanedUp) {
-                parser.stopParsing();
-            }
-
-            const convModeToolCalls = accumulatedToolCallsFromConversational || [];
-            const aiResponseMessage: Message = {
-                role: 'assistant',
-                content: fullTextResponse || null,
-                tool_calls: convModeToolCalls.length > 0 ? convModeToolCalls : [] // Ensure array, not null
-            };
-            // if (accumulatedToolCallsFromConversational && accumulatedToolCallsFromConversational.length > 0) {
-            //     aiResponseMessage.tool_calls = accumulatedToolCallsFromConversational;
-                // If LLM generated text before calling request_tool_execution, that text is part of fullTextResponse
-                // and will be sent via markdown parser. The 'Okay, I'll try...' part should be in the prompt example.
-            // }
-            history.push(aiResponseMessage); // Add this conversational turn's AI response
-            this.conversationHistory.set(sessionId, this.trimHistory(history));
-
-            if (convModeToolCalls.length > 0) {
-                logger.info('Conversational mode LLM made tool calls. Returning to main processor.', { sessionId, toolCalls: convModeToolCalls });
-                // The main `processMessage` will receive these tool calls (e.g. request_tool_execution or request_missing_parameters)
-                // and process them in its next iteration or logic.
-                return {
-                    content: fullTextResponse, // Content generated before deciding to call tool
-                    toolCalls: convModeToolCalls // Already in correct format for LLMResponse
-                };
-            }
-            return { content: fullTextResponse, toolCalls: [] }; // Ensure array, not null
-
-        } catch (error: any) {
-            logger.error('Error in handleConversationalMode', { error: error.message, sessionId, conversationalModeProcessingId });
-            // Similar error handling as processMessage
-            this.emit('send_chunk', sessionId, { type: 'error', content: "Error in conversational mode.", messageId: currentMessageId, isFinal: true } as StreamChunk);
-            if (parser.parsing && !parserSuccessfullyCleanedUp) parser.stopParsing();
-            if (!parserSuccessfullyCleanedUp && unsubscribeFromParser) { unsubscribeFromParser(); MarkdownStreamParser.removeInstance(parserInstanceId); }
-            return { content: "Sorry, an error occurred in conversational mode.", toolCalls: [] }; // Ensure array
-        } finally {
-            if (!parserSuccessfullyCleanedUp) {
-                logger.warn('Parser (conversational_mode) not cleaned up by normal flow, forcing cleanup in finally.', { parserInstanceId });
-                if (unsubscribeFromParser) unsubscribeFromParser();
-                if (parser.parsing) parser.stopParsing();
-                MarkdownStreamParser.removeInstance(parserInstanceId);
-            }
-        }
+    private getHistory(sessionId: string): Message[] {
+        return this.conversationHistory.get(sessionId) || [];
     }
 
-    // Keep getActionAnalysis for potential future use
+    private trimHistory(history: Message[], maxLength: number = 20): Message[] {
+        if (history.length <= maxLength) {
+            return history;
+        }
+        const systemPrompt = history[0]?.role === 'system' ? [history[0]] : [];
+        const recentMessages = history.slice(-(maxLength - systemPrompt.length));
+        return [...systemPrompt, ...recentMessages];
+    }
+
     public async getActionAnalysis(analysisPrompt: string, sessionId: string): Promise<string> {
-       logger.info('Performing action analysis (getActionAnalysis called)', { sessionId });
+        logger.info('Performing action analysis', { sessionId });
         try {
             const messagesForApi: Message[] = [{ role: 'system', content: analysisPrompt }];
             const response = await this.client.chat.completions.create({
-                model: this.model, messages: messagesForApi as any,
-                max_tokens: this.maxTokens, temperature: 0.1,
-                response_format: { type: "json_object" }, // Request JSON
-                tools: undefined, tool_choice: undefined,
+                model: this.model, 
+                messages: messagesForApi as any,
+                max_tokens: this.maxTokens, 
+                temperature: 0.1,
+                response_format: { type: "json_object" },
+                tools: undefined, 
+                tool_choice: undefined,
             });
             const content = response.choices[0]?.message?.content;
             if (!content) throw new Error('No content from action analysis LLM');
@@ -717,21 +689,5 @@ export class ConversationService extends EventEmitter {
             logger.error('Error generating action analysis', { error: error.message, sessionId });
             throw new Error(`Failed action analysis: ${error.message}`);
         }
-    }
-
-    // --- Helper Methods ---
-    private getHistory(sessionId: string): Message[] {
-        return this.conversationHistory.get(sessionId) || [];
-    }
-
-    // Simple history trimming example (adjust as needed)
-    private trimHistory(history: Message[], maxLength: number = 20): Message[] {
-        if (history.length <= maxLength) {
-            return history;
-        }
-        // System prompt is handled per-stream. This trim is for user/assistant messages.
-        const systemPrompt = history[0]?.role === 'system' ? [history[0]] : [];
-        const recentMessages = history.slice(-(maxLength - systemPrompt.length));
-        return [...systemPrompt, ...recentMessages];
     }
 }

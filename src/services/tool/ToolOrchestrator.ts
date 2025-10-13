@@ -1,6 +1,9 @@
 // src/services/tool/ToolOrchestrator.ts
 
 import { BaseService } from '../base/BaseService';
+import { DataDependencyService } from '../data/DataDependencyService';
+import { Resolver } from '../data/Resolver';
+import { StepResult } from '../../types/data';
 import { ToolCall } from './tool.types';
 import { NangoService } from '../NangoService';
 import { ToolResult } from '../conversation/types';
@@ -29,77 +32,99 @@ interface OrchestratorConfig  {
     logger: winston.Logger;
     nangoService: NangoService;
     toolConfigManager: ToolConfigManager.ToolConfigManager;
+    dataDependencyService: DataDependencyService;
+    resolver: Resolver;
 }
 
 export class ToolOrchestrator extends BaseService {
     private nangoService: NangoService;
     private toolConfigManager: ToolConfigManager.ToolConfigManager;
+    private dataDependencyService: DataDependencyService;
+    private resolver: Resolver;
 
-    constructor(config: any) {
+    constructor(config: OrchestratorConfig) {
         super({ logger: config.logger });
         this.nangoService = config.nangoService;
         this.toolConfigManager = config.toolConfigManager;
+        this.dataDependencyService = config.dataDependencyService;
+        this.resolver = config.resolver;
         logger.info("ToolOrchestrator initialized to use Redis for connection lookups.");
     }
 
-    async executeTool(toolCall: ToolCall): Promise<ToolResult> {
-    const executionId = toolCall.id || uuidv4();
-    const { name: toolName } = toolCall;
+    async executeTool(toolCall: ToolCall, planId: string, stepId: string): Promise<ToolResult> {
+        const executionId = toolCall.id || uuidv4();
+        const { name: toolName, arguments: args } = toolCall;
 
-    this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
+        this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
 
-    try {
-        const nangoResult = await this.executeNangoActionDispatcher(toolCall);
-        let finalData: any;
+        const stepResult: StepResult = {
+            planId,
+            stepId,
+            status: 'running',
+            startedAt: new Date(),
+            rawOutput: null,
+        };
 
-        // This logic correctly handles the "truncated_response" key from Nango
-        if (nangoResult && typeof nangoResult.truncated_response === 'string') {
-            this.logger.warn('Nango returned a truncated_response. Parsing partial data.', { tool: toolName });
-            try {
-                // Attempt to parse the partial JSON string
-                finalData = JSON.parse(nangoResult.truncated_response);
-            } catch (parseError) {
-                this.logger.error('Failed to parse truncated_response from Nango.', { parseError, tool: toolName });
-                // If parsing fails, return an error object but still mark as success to avoid a failed run
-                finalData = { 
-                    error: 'Failed to parse truncated response from Nango. Data may be incomplete.',
-                    raw: nangoResult.truncated_response 
+        try {
+            const resolvedArgs = await this.resolver.resolve(planId, args);
+            toolCall.arguments = resolvedArgs;
+
+            const nangoResult = await this.executeNangoActionDispatcher(toolCall);
+            let finalData: any;
+
+            if (nangoResult && typeof nangoResult.truncated_response === 'string') {
+                this.logger.warn('Nango returned a truncated_response. Parsing partial data.', { tool: toolName });
+                try {
+                    finalData = JSON.parse(nangoResult.truncated_response);
+                } catch (parseError) {
+                    this.logger.error('Failed to parse truncated_response from Nango.', { parseError, tool: toolName });
+                    finalData = { 
+                        error: 'Failed to parse truncated response from Nango. Data may be incomplete.',
+                        raw: nangoResult.truncated_response 
+                    };
+                }
+            } else if ((nangoResult as any)?.success === false) {
+                const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
+                this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
+                stepResult.status = 'failed';
+                stepResult.endedAt = new Date();
+                this.dataDependencyService.saveStepResult(stepResult);
+                return {
+                    status: 'failed',
+                    toolName: toolName,
+                    data: null,
+                    error: errorMessage
                 };
+            } else {
+                finalData = nangoResult;
             }
-        } else if ((nangoResult as any)?.success === false) {
-            // Handles explicit failures from Nango
-            const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
-            this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
+
+            this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
+            stepResult.status = 'completed';
+            stepResult.rawOutput = finalData;
+            stepResult.endedAt = new Date();
+            this.dataDependencyService.saveStepResult(stepResult);
+
+            return {
+                status: 'success',
+                toolName: toolName,
+                data: finalData,
+                error: ''
+            };
+
+        } catch (error: any) {
+            logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
+            stepResult.status = 'failed';
+            stepResult.endedAt = new Date();
+            this.dataDependencyService.saveStepResult(stepResult);
             return {
                 status: 'failed',
                 toolName: toolName,
                 data: null,
-                error: errorMessage
+                error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
             };
-        } else {
-            // Handles a normal, non-truncated, successful response
-            finalData = nangoResult;
         }
-
-        // If we get here, the tool execution is considered a success.
-        this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
-        return {
-            status: 'success',
-            toolName: toolName,
-            data: finalData,
-            error: ''
-        };
-
-    } catch (error: any) {
-        logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
-        return {
-            status: 'failed',
-            toolName: toolName,
-            data: null,
-            error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
-        };
     }
-}
 
     // Add this function inside the ToolOrchestrator class in ToolOrchestrator.ts
 
