@@ -1,10 +1,9 @@
 
 import winston from 'winston';
-import { Run }mport { ActionLauncherService } from '../action-launcher.service';
+import { ActionLauncherService } from '../action-launcher.service';
 import { StreamManager } from './stream/StreamManager';
 import { ToolOrchestrator } from './tool/ToolOrchestrator';
-import { RunManager } from './tool/RunManager';
-import { Run } from './tool/run.types';
+import { Run, ToolExecutionStep } from './tool/run.types';
 
 const logger = winston.createLogger({
   level: 'info',
@@ -48,7 +47,9 @@ export class PlanExecutorService {
         );
 
         // Update the step in the run object
-        const stepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+        const stepIndex = run.toolExecutionPlan.findIndex(
+          (planStep: ToolExecutionStep) => planStep.stepId === step.stepId
+        );
         if (stepIndex > -1) {
           run.toolExecutionPlan[stepIndex].status = completedAction.status;
           run.toolExecutionPlan[stepIndex].result = {
