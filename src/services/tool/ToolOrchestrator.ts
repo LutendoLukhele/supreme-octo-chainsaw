@@ -67,7 +67,8 @@ export class ToolOrchestrator extends BaseService {
 
         try {
             const resolvedArgs = await this.resolver.resolve(planId, args);
-            toolCall.arguments = resolvedArgs;
+            const sanitizedArgs = this.sanitizeToolArgs(toolName, resolvedArgs);
+            toolCall.arguments = sanitizedArgs;
 
             const nangoResult = await this.executeNangoActionDispatcher(toolCall);
             let finalData: any;
@@ -124,6 +125,122 @@ export class ToolOrchestrator extends BaseService {
                 error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
             };
         }
+    }
+
+    private sanitizeToolArgs(toolName: string, args: Record<string, any>): Record<string, any> {
+        if (!args || typeof args !== 'object') {
+            return args;
+        }
+
+        switch (toolName) {
+            case 'fetch_emails':
+                return this.sanitizeFetchEmailsArgs(args);
+            default:
+                return args;
+        }
+    }
+
+    private sanitizeFetchEmailsArgs(args: Record<string, any>): Record<string, any> {
+        const sanitizedArgs: Record<string, any> = { ...args };
+
+        if (!sanitizedArgs.operation) {
+            sanitizedArgs.operation = 'fetch';
+        }
+
+        const filters = (sanitizedArgs.filters && typeof sanitizedArgs.filters === 'object')
+            ? { ...sanitizedArgs.filters }
+            : {};
+
+        const numericLimit = this.parseNumeric(filters.limit);
+        if (numericLimit === null || !Number.isFinite(numericLimit) || numericLimit <= 0) {
+            filters.limit = 7;
+        } else if (numericLimit > 50) {
+            filters.limit = 50;
+        } else {
+            filters.limit = Math.floor(numericLimit);
+        }
+
+        const dateRange = (filters.dateRange && typeof filters.dateRange === 'object')
+            ? { ...filters.dateRange }
+            : undefined;
+
+        if (dateRange) {
+            const afterTimestamp = this.parseDate(dateRange.after);
+            const beforeTimestamp = this.parseDate(dateRange.before);
+
+            const sanitizedDateRange: Record<string, string> = {};
+
+            if (afterTimestamp) {
+                sanitizedDateRange.after = new Date(afterTimestamp).toISOString();
+            } else if (dateRange.after) {
+                this.logger.debug('Dropping invalid fetch_emails dateRange.after', { provided: dateRange.after });
+            }
+
+            if (beforeTimestamp && (!afterTimestamp || beforeTimestamp > afterTimestamp)) {
+                sanitizedDateRange.before = new Date(beforeTimestamp).toISOString();
+            } else if (dateRange.before) {
+                this.logger.debug('Dropping invalid fetch_emails dateRange.before', { provided: dateRange.before });
+            }
+
+            if (Object.keys(sanitizedDateRange).length > 0) {
+                filters.dateRange = sanitizedDateRange;
+            } else {
+                delete filters.dateRange;
+            }
+        }
+
+        const sanitizedFilterKeys = Object.keys(filters).filter(key => {
+            const value = (filters as any)[key];
+            if (value === undefined || value === null) {
+                return false;
+            }
+            if (typeof value === 'object' && Object.keys(value).length === 0) {
+                return false;
+            }
+            return true;
+        });
+
+        if (sanitizedFilterKeys.length > 0) {
+            sanitizedArgs.filters = filters;
+        } else {
+            delete sanitizedArgs.filters;
+        }
+
+        return sanitizedArgs;
+    }
+
+    private parseNumeric(value: any): number | null {
+        if (typeof value === 'number') {
+            return value;
+        }
+        if (typeof value === 'string') {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+        return null;
+    }
+
+    private parseDate(value: any): number | null {
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        const timestamp = Date.parse(trimmed);
+        if (Number.isNaN(timestamp)) {
+            return null;
+        }
+
+        const MIN_VALID_TIMESTAMP = Date.parse('2000-01-01T00:00:00Z');
+        if (timestamp < MIN_VALID_TIMESTAMP) {
+            return null;
+        }
+
+        return timestamp;
     }
 
     // Add this function inside the ToolOrchestrator class in ToolOrchestrator.ts
@@ -203,7 +320,4 @@ private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
     }
 }
 }
-
-
-
 
