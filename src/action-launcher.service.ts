@@ -44,6 +44,7 @@ export class ActionLauncherService extends EventEmitter {
     sessionId: string,
     userId: string,
     messageId: string,
+    toolOrchestrator: ToolOrchestrator,
     activeRun?: Run
   ): Promise<void> {
     logger.info('ActionLauncher: Processing action plan', { 
@@ -54,6 +55,7 @@ export class ActionLauncherService extends EventEmitter {
 
     const clientActionsToConfirm: ActiveAction[] = [];
     const clientActionsNeedingParams: ActiveAction[] = [];
+    const autoExecutionPromises: Promise<ActiveAction>[] = [];
 
     for (const planItem of actionPlan) {
       const toolName = planItem.tool;
@@ -98,7 +100,32 @@ export class ActionLauncherService extends EventEmitter {
       if (serverDeterminedStatus === 'collecting_parameters') {
         clientActionsNeedingParams.push(newActiveAction);
       } else if (serverDeterminedStatus === 'ready') {
-        clientActionsToConfirm.push(newActiveAction);
+        const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
+        const hasParams = toolSchema?.properties && Object.keys(toolSchema.properties).length > 0;
+
+        if (hasParams) {
+            // Suppress confirmation for single-step auto-executing plans.
+            if (actionPlan.length > 1) {
+                clientActionsToConfirm.push(newActiveAction);
+            } else {
+                logger.info('ActionLauncher: Suppressing confirmation for single auto-executing action.', { sessionId, actionId: newActiveAction.id });
+            }
+        } else {
+            logger.info('ActionLauncher: Auto-executing parameter-less action', { sessionId, actionId: newActiveAction.id });
+            const promise = this.executeAction(
+                sessionId,
+                userId,
+                { // Corrected payload to include arguments
+                  actionId: newActiveAction.id,
+                  toolName: newActiveAction.toolName,
+                  arguments: newActiveAction.arguments
+                },
+                toolOrchestrator,
+                planItem.id,
+                planItem.id
+            );
+            autoExecutionPromises.push(promise);
+        }
       }
     }
 
@@ -107,6 +134,18 @@ export class ActionLauncherService extends EventEmitter {
       sessionId,
       storedActionIds: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
     });
+
+    if (autoExecutionPromises.length > 0) {
+        try {
+            const executedActions = await Promise.all(autoExecutionPromises);
+            logger.info('ActionLauncher: Auto-executed actions finished', { sessionId, count: executedActions.length });
+            // Optionally emit an event for each or for all
+            this.emit('actions_auto_executed', { sessionId, actions: executedActions });
+        } catch (error) {
+            logger.error('ActionLauncher: Error during auto-execution of actions', { sessionId, error });
+            // Decide how to handle partial failures. For now, just log.
+        }
+    }
 
     if (clientActionsNeedingParams.length > 0) {
       const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;
@@ -342,10 +381,15 @@ export class ActionLauncherService extends EventEmitter {
     }
   }
 
-  public getActiveActions(sessionId: string): ActiveAction[] {
-    const sessionActionMap = this.activeActions.get(sessionId);
-    return sessionActionMap ? Array.from(sessionActionMap.values()) : [];
-  }
+    getActiveActions(sessionId: string): ActiveAction[] {
+        const sessionActions = this.activeActions.get(sessionId);
+        return sessionActions ? Array.from(sessionActions.values()) : [];
+    }
+
+    clearActiveActions(sessionId: string): void {
+        this.activeActions.delete(sessionId);
+        logger.info('Cleared active actions for session', { sessionId });
+    }
 
   public getAction(sessionId: string, actionId: string): ActiveAction | null {
     return this.activeActions.get(sessionId)?.get(actionId) || null;

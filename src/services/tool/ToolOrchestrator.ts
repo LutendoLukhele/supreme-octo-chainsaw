@@ -1,9 +1,4 @@
-// src/services/tool/ToolOrchestrator.ts
-
 import { BaseService } from '../base/BaseService';
-import { DataDependencyService } from '../data/DataDependencyService';
-import { Resolver } from '../data/Resolver';
-import { StepResult } from '../../types/data';
 import { ToolCall } from './tool.types';
 import { NangoService } from '../NangoService';
 import { ToolResult } from '../conversation/types';
@@ -13,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '../../config';
 import Redis from 'ioredis';
 import { Run } from './run.types';
+import { neon } from '@neondatabase/serverless';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -21,303 +17,117 @@ const logger = winston.createLogger({
 });
 
 const redis = new Redis(CONFIG.REDIS_URL!);
-
-interface NangoActionResponse {
-  success?: boolean;
-  data?: any;
-  [key: string]: any;
-}
-
-interface OrchestratorConfig  {
-    logger: winston.Logger;
-    nangoService: NangoService;
-    toolConfigManager: ToolConfigManager.ToolConfigManager;
-    dataDependencyService: DataDependencyService;
-    resolver: Resolver;
-}
+const sql = neon('postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require');
 
 export class ToolOrchestrator extends BaseService {
     private nangoService: NangoService;
     private toolConfigManager: ToolConfigManager.ToolConfigManager;
-    private dataDependencyService: DataDependencyService;
-    private resolver: Resolver;
+    logger: any;
 
-    constructor(config: OrchestratorConfig) {
+    constructor(config: any) {
         super({ logger: config.logger });
         this.nangoService = config.nangoService;
         this.toolConfigManager = config.toolConfigManager;
-        this.dataDependencyService = config.dataDependencyService;
-        this.resolver = config.resolver;
-        logger.info("ToolOrchestrator initialized to use Redis for connection lookups.");
+        logger.info("ToolOrchestrator initialized with Redis + Postgres fallback.");
     }
 
     async executeTool(toolCall: ToolCall, planId: string, stepId: string): Promise<ToolResult> {
         const executionId = toolCall.id || uuidv4();
-        const { name: toolName, arguments: args } = toolCall;
+        const { name: toolName, arguments: originalArgs } = toolCall;
 
-        this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
-
-        const stepResult: StepResult = {
-            planId,
-            stepId,
-            status: 'running',
-            startedAt: new Date(),
-            rawOutput: null,
-        };
+        this.logger.info(`Executing tool: '${toolName}'`, { executionId, toolName, userId: toolCall.userId });
 
         try {
-            const resolvedArgs = await this.resolver.resolve(planId, args);
-            const sanitizedArgs = this.sanitizeToolArgs(toolName, resolvedArgs);
-            toolCall.arguments = sanitizedArgs;
+            const toolCallToExecute = { ...toolCall };
 
-            const nangoResult = await this.executeNangoActionDispatcher(toolCall);
+            if (toolName === 'fetch_entity') {
+                this.logger.info('Applying fetch_entity normalization logic.');
+                toolCallToExecute.arguments = this._normalizeFetchEntityArgs(originalArgs);
+            }
+
+            const nangoResult = await this.executeNangoActionDispatcher(toolCallToExecute);
+
             let finalData: any;
 
             if (nangoResult && typeof nangoResult.truncated_response === 'string') {
-                this.logger.warn('Nango returned a truncated_response. Parsing partial data.', { tool: toolName });
                 try {
                     finalData = JSON.parse(nangoResult.truncated_response);
-                } catch (parseError) {
-                    this.logger.error('Failed to parse truncated_response from Nango.', { parseError, tool: toolName });
-                    finalData = { 
-                        error: 'Failed to parse truncated response from Nango. Data may be incomplete.',
-                        raw: nangoResult.truncated_response 
-                    };
+                } catch {
+                    finalData = { error: 'Failed to parse truncated response.', raw: nangoResult.truncated_response };
                 }
             } else if ((nangoResult as any)?.success === false) {
-                const errorMessage = (nangoResult as any).message || `Tool '${toolName}' failed.`;
-                this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: (nangoResult as any).errors, message: errorMessage });
-                stepResult.status = 'failed';
-                stepResult.endedAt = new Date();
-                this.dataDependencyService.saveStepResult(stepResult);
-                return {
-                    status: 'failed',
-                    toolName: toolName,
-                    data: null,
-                    error: errorMessage
-                };
+                return { status: 'failed', toolName, data: null, error: (nangoResult as any).message };
             } else {
                 finalData = nangoResult;
             }
 
-            this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
-            stepResult.status = 'completed';
-            stepResult.rawOutput = finalData;
-            stepResult.endedAt = new Date();
-            this.dataDependencyService.saveStepResult(stepResult);
-
-            return {
-                status: 'success',
-                toolName: toolName,
-                data: finalData,
-                error: ''
-            };
+            return { status: 'success', toolName, data: finalData, error: '' };
 
         } catch (error: any) {
             logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
-            stepResult.status = 'failed';
-            stepResult.endedAt = new Date();
-            this.dataDependencyService.saveStepResult(stepResult);
-            return {
-                status: 'failed',
-                toolName: toolName,
-                data: null,
-                error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
-            };
+            return { status: 'failed', toolName: toolCall.name, data: null, error: error.message || 'Unknown error' };
         }
     }
 
-    private sanitizeToolArgs(toolName: string, args: Record<string, any>): Record<string, any> {
-        if (!args || typeof args !== 'object') {
-            return args;
-        }
-
-        switch (toolName) {
-            case 'fetch_emails':
-                return this.sanitizeFetchEmailsArgs(args);
-            default:
-                return args;
-        }
+    private _normalizeFetchEntityArgs(args: Record<string, any>): Record<string, any> {
+        const wrap = (value: any) => ({ type: value ?? null, nullable: value == null });
+        return {
+            operation: args.operation || 'fetch',
+            entityType: args.entityType,
+            identifier: args.identifier === 'all' ? { type: 'all', nullable: false } : wrap(args.identifier),
+            identifierType: wrap(args.identifierType),
+            timeFrame: wrap(args.timeFrame),
+            filters: args.filters ?? {},
+            format: wrap(args.format),
+            countOnly: { type: args.countOnly ?? false, nullable: false },
+            limit: wrap(args.limit)
+        };
     }
 
-    private sanitizeFetchEmailsArgs(args: Record<string, any>): Record<string, any> {
-        const sanitizedArgs: Record<string, any> = { ...args };
-
-        if (!sanitizedArgs.operation) {
-            sanitizedArgs.operation = 'fetch';
+    private async resolveConnectionId(userId: string, providerConfigKey: string): Promise<string | null> {
+        this.logger.info(`Querying database for connectionId`, { userId, providerConfigKey });
+    
+        const rows = await sql`
+            SELECT connection_id FROM user_connections 
+            WHERE user_id = ${userId} AND provider = ${providerConfigKey}
+        `;
+    
+        if (rows.length > 0 && rows[0].connection_id) {
+            const connectionId = rows[0].connection_id;
+            this.logger.info(`Resolved connectionId from database`, { userId, providerConfigKey, connectionId: '***' });
+            return connectionId;
         }
-
-        const filters = (sanitizedArgs.filters && typeof sanitizedArgs.filters === 'object')
-            ? { ...sanitizedArgs.filters }
-            : {};
-
-        const numericLimit = this.parseNumeric(filters.limit);
-        if (numericLimit === null || !Number.isFinite(numericLimit) || numericLimit <= 0) {
-            filters.limit = 7;
-        } else if (numericLimit > 50) {
-            filters.limit = 50;
-        } else {
-            filters.limit = Math.floor(numericLimit);
-        }
-
-        const dateRange = (filters.dateRange && typeof filters.dateRange === 'object')
-            ? { ...filters.dateRange }
-            : undefined;
-
-        if (dateRange) {
-            const afterTimestamp = this.parseDate(dateRange.after);
-            const beforeTimestamp = this.parseDate(dateRange.before);
-
-            const sanitizedDateRange: Record<string, string> = {};
-
-            if (afterTimestamp) {
-                sanitizedDateRange.after = new Date(afterTimestamp).toISOString();
-            } else if (dateRange.after) {
-                this.logger.debug('Dropping invalid fetch_emails dateRange.after', { provided: dateRange.after });
-            }
-
-            if (beforeTimestamp && (!afterTimestamp || beforeTimestamp > afterTimestamp)) {
-                sanitizedDateRange.before = new Date(beforeTimestamp).toISOString();
-            } else if (dateRange.before) {
-                this.logger.debug('Dropping invalid fetch_emails dateRange.before', { provided: dateRange.before });
-            }
-
-            if (Object.keys(sanitizedDateRange).length > 0) {
-                filters.dateRange = sanitizedDateRange;
-            } else {
-                delete filters.dateRange;
-            }
-        }
-
-        const sanitizedFilterKeys = Object.keys(filters).filter(key => {
-            const value = (filters as any)[key];
-            if (value === undefined || value === null) {
-                return false;
-            }
-            if (typeof value === 'object' && Object.keys(value).length === 0) {
-                return false;
-            }
-            return true;
-        });
-
-        if (sanitizedFilterKeys.length > 0) {
-            sanitizedArgs.filters = filters;
-        } else {
-            delete sanitizedArgs.filters;
-        }
-
-        return sanitizedArgs;
-    }
-
-    private parseNumeric(value: any): number | null {
-        if (typeof value === 'number') {
-            return value;
-        }
-        if (typeof value === 'string') {
-            const parsed = Number(value);
-            return Number.isFinite(parsed) ? parsed : null;
-        }
+    
+        this.logger.error(`No connectionId found for user and provider`, { userId, providerConfigKey });
         return null;
     }
 
-    private parseDate(value: any): number | null {
-        if (typeof value !== 'string') {
-            return null;
+
+    private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
+        const { name: toolName, arguments: args, userId } = toolCall;
+        const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
+
+        if (!providerConfigKey) throw new Error(`Missing providerConfigKey for tool: ${toolName}`);
+
+        const connectionId = await this.resolveConnectionId(userId, providerConfigKey);
+        if (!connectionId) throw new Error(`No active connectionId found for user ${userId} for provider ${providerConfigKey}`);
+
+        this.logger.info(`Dispatching tool`, { toolName, userId, providerConfigKey, connectionId });
+
+        switch (toolName) {
+            case 'send_email':
+                return this.nangoService.sendEmail(providerConfigKey, connectionId, args as any);
+            case 'fetch_emails':
+                return this.nangoService.fetchEmails(providerConfigKey, connectionId, args);
+            case 'create_entity':
+            case 'update_entity':
+            case 'fetch_entity':
+                return this.nangoService.triggerSalesforceAction(providerConfigKey, connectionId, args);
+            case 'create_zoom_meeting':
+                return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
+            default:
+                throw new Error(`No Nango handler for tool: ${toolName}`);
         }
-
-        const trimmed = value.trim();
-        if (!trimmed) {
-            return null;
-        }
-
-        const timestamp = Date.parse(trimmed);
-        if (Number.isNaN(timestamp)) {
-            return null;
-        }
-
-        const MIN_VALID_TIMESTAMP = Date.parse('2000-01-01T00:00:00Z');
-        if (timestamp < MIN_VALID_TIMESTAMP) {
-            return null;
-        }
-
-        return timestamp;
     }
-
-    // Add this function inside the ToolOrchestrator class in ToolOrchestrator.ts
-
-    /**
-     * A patch to correct malformed 'fetch_entity' arguments from the LLM.
-     * It checks for arguments incorrectly nested under 'identifier.type'
-     * and flattens them to the correct top-level structure.
-     * @param args The raw arguments from the tool call.
-     * @returns A corrected, flat arguments object.
-     */
-    private _normalizeFetchEntityArgs(args: Record<string, any>): Record<string, any> {
-        // Check for the specific malformed structure: an object inside 'identifier.type'
-        if (args.identifier && typeof args.identifier.type === 'object' && args.identifier.type !== null) {
-            
-            this.logger.warn('Malformed fetch_entity arguments detected. Applying normalization patch.', { originalArgs: args });
-
-            const nestedArgs = args.identifier.type;
-
-            // Create a new, flat object with the correct structure.
-            const newArgs = {
-                operation: nestedArgs.operation || 'fetch',
-                entityType: nestedArgs.entityType,
-                filters: nestedArgs.filters,
-                // Copy any other potential top-level fields that might be correct
-                ...args.fields
-            };
-            
-            this.logger.info('Arguments have been successfully normalized.', { newArgs });
-            return newArgs;
-        }
-
-        // If the structure is already correct, return the original arguments without change.
-        return args;
-    }
-
-     // In src/services/tool/ToolOrchestrator.ts
-
-private async executeNangoActionDispatcher(toolCall: ToolCall): Promise<any> {
-    const { name: toolName, arguments: args, userId } = toolCall;
-
-    // 1. This correctly gets the Provider Key (e.g., 'google-mail')
-    const providerConfigKey = this.toolConfigManager.getProviderConfigKeyForTool(toolName);
-    if (!providerConfigKey) {
-        throw new Error(`Configuration missing 'providerConfigKey' for tool: ${toolName}`);
-    }
-
-    // 2. This correctly gets the user's unique Connection ID from Redis
-    const connectionId = await redis.get(`active-connection:${userId}`);
-    if (!connectionId) {
-        throw new Error(`No active Nango connection found to execute tool '${toolName}'.`);
-    }
-
-    this.logger.info(`Dispatching tool '${toolName}' with correct IDs.`, { providerConfigKey });
-
-    switch (toolName) {
-        case 'fetch_emails':
-            // --- THIS IS THE FIX ---
-            // Ensure the dynamic 'connectionId' from Redis is passed as the second argument,
-            // and 'providerConfigKey' is passed as the first.
-            return this.nangoService.fetchEmails(providerConfigKey, connectionId, args);
-
-        case 'create_zoom_meeting':
-            return this.nangoService.createCalendarEvent(providerConfigKey, connectionId, args);
-        
-        case 'create_entity':
-        case 'update_entity':
-        case 'fetch_entity':
-            return this.nangoService.triggerSalesforceAction(
-                providerConfigKey,
-                connectionId,
-                args
-            );
-
-        default:
-            throw new Error(`No Nango action handler mapped for tool: ${toolName}`);
-    }
-}
 }
 

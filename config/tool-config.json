@@ -1,35 +1,6 @@
 {
   "tools": [
     {
-      "name": "request_missing_parameters",
-      "description": "Use this tool ONLY when required parameters for another tool are missing.",
-      "providerConfigKey": "__META__",
-      "category": "Meta",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "intended_tool_name": {
-            "type": "string",
-            "description": "The exact name of the tool the user likely intended to use."
-          },
-          "missing_params": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "A list of the REQUIRED parameters that are missing."
-          },
-          "clarification_question": {
-            "type": "string",
-            "description": "A clear question to ask the user to obtain the missing parameters."
-          }
-        },
-        "required": [
-          "intended_tool_name",
-          "missing_params",
-          "clarification_question"
-        ]
-      }
-    },
-    {
       "name": "fetch_emails",
       "description": "Fetch Gmail emails with advanced filtering options.",
       "providerConfigKey": "google-mail",

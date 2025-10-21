@@ -20,13 +20,25 @@ class ToolOrchestrator extends BaseService_1.BaseService {
         super({ logger: config.logger });
         this.nangoService = config.nangoService;
         this.toolConfigManager = config.toolConfigManager;
+        this.dataDependencyService = config.dataDependencyService;
+        this.resolver = config.resolver;
         logger.info("ToolOrchestrator initialized to use Redis for connection lookups.");
     }
-    async executeTool(toolCall) {
+    async executeTool(toolCall, planId, stepId) {
         const executionId = toolCall.id || (0, uuid_1.v4)();
-        const { name: toolName } = toolCall;
+        const { name: toolName, arguments: args } = toolCall;
         this.logger.info(`Orchestrator executing validated tool: '${toolName}'`, { executionId, toolName });
+        const stepResult = {
+            planId,
+            stepId,
+            status: 'running',
+            startedAt: new Date(),
+            rawOutput: null,
+        };
         try {
+            const resolvedArgs = await this.resolver.resolve(planId, args);
+            const sanitizedArgs = this.sanitizeToolArgs(toolName, resolvedArgs);
+            toolCall.arguments = sanitizedArgs;
             const nangoResult = await this.executeNangoActionDispatcher(toolCall);
             let finalData;
             if (nangoResult && typeof nangoResult.truncated_response === 'string') {
@@ -45,6 +57,9 @@ class ToolOrchestrator extends BaseService_1.BaseService {
             else if (nangoResult?.success === false) {
                 const errorMessage = nangoResult.message || `Tool '${toolName}' failed.`;
                 this.logger.warn(`Tool execution failed`, { tool: toolName, executionId, errors: nangoResult.errors, message: errorMessage });
+                stepResult.status = 'failed';
+                stepResult.endedAt = new Date();
+                this.dataDependencyService.saveStepResult(stepResult);
                 return {
                     status: 'failed',
                     toolName: toolName,
@@ -56,6 +71,10 @@ class ToolOrchestrator extends BaseService_1.BaseService {
                 finalData = nangoResult;
             }
             this.logger.info(`Tool execution successful`, { tool: toolName, executionId });
+            stepResult.status = 'completed';
+            stepResult.rawOutput = finalData;
+            stepResult.endedAt = new Date();
+            this.dataDependencyService.saveStepResult(stepResult);
             return {
                 status: 'success',
                 toolName: toolName,
@@ -65,6 +84,9 @@ class ToolOrchestrator extends BaseService_1.BaseService {
         }
         catch (error) {
             logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
+            stepResult.status = 'failed';
+            stepResult.endedAt = new Date();
+            this.dataDependencyService.saveStepResult(stepResult);
             return {
                 status: 'failed',
                 toolName: toolName,
@@ -72,6 +94,107 @@ class ToolOrchestrator extends BaseService_1.BaseService {
                 error: error instanceof Error ? error.message : 'Unknown orchestrator exception'
             };
         }
+    }
+    sanitizeToolArgs(toolName, args) {
+        if (!args || typeof args !== 'object') {
+            return args;
+        }
+        switch (toolName) {
+            case 'fetch_emails':
+                return this.sanitizeFetchEmailsArgs(args);
+            default:
+                return args;
+        }
+    }
+    sanitizeFetchEmailsArgs(args) {
+        const sanitizedArgs = { ...args };
+        if (!sanitizedArgs.operation) {
+            sanitizedArgs.operation = 'fetch';
+        }
+        const filters = (sanitizedArgs.filters && typeof sanitizedArgs.filters === 'object')
+            ? { ...sanitizedArgs.filters }
+            : {};
+        const numericLimit = this.parseNumeric(filters.limit);
+        if (numericLimit === null || !Number.isFinite(numericLimit) || numericLimit <= 0) {
+            filters.limit = 7;
+        }
+        else if (numericLimit > 50) {
+            filters.limit = 50;
+        }
+        else {
+            filters.limit = Math.floor(numericLimit);
+        }
+        const dateRange = (filters.dateRange && typeof filters.dateRange === 'object')
+            ? { ...filters.dateRange }
+            : undefined;
+        if (dateRange) {
+            const afterTimestamp = this.parseDate(dateRange.after);
+            const beforeTimestamp = this.parseDate(dateRange.before);
+            const sanitizedDateRange = {};
+            if (afterTimestamp) {
+                sanitizedDateRange.after = new Date(afterTimestamp).toISOString();
+            }
+            else if (dateRange.after) {
+                this.logger.debug('Dropping invalid fetch_emails dateRange.after', { provided: dateRange.after });
+            }
+            if (beforeTimestamp && (!afterTimestamp || beforeTimestamp > afterTimestamp)) {
+                sanitizedDateRange.before = new Date(beforeTimestamp).toISOString();
+            }
+            else if (dateRange.before) {
+                this.logger.debug('Dropping invalid fetch_emails dateRange.before', { provided: dateRange.before });
+            }
+            if (Object.keys(sanitizedDateRange).length > 0) {
+                filters.dateRange = sanitizedDateRange;
+            }
+            else {
+                delete filters.dateRange;
+            }
+        }
+        const sanitizedFilterKeys = Object.keys(filters).filter(key => {
+            const value = filters[key];
+            if (value === undefined || value === null) {
+                return false;
+            }
+            if (typeof value === 'object' && Object.keys(value).length === 0) {
+                return false;
+            }
+            return true;
+        });
+        if (sanitizedFilterKeys.length > 0) {
+            sanitizedArgs.filters = filters;
+        }
+        else {
+            delete sanitizedArgs.filters;
+        }
+        return sanitizedArgs;
+    }
+    parseNumeric(value) {
+        if (typeof value === 'number') {
+            return value;
+        }
+        if (typeof value === 'string') {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+        return null;
+    }
+    parseDate(value) {
+        if (typeof value !== 'string') {
+            return null;
+        }
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+        const timestamp = Date.parse(trimmed);
+        if (Number.isNaN(timestamp)) {
+            return null;
+        }
+        const MIN_VALID_TIMESTAMP = Date.parse('2000-01-01T00:00:00Z');
+        if (timestamp < MIN_VALID_TIMESTAMP) {
+            return null;
+        }
+        return timestamp;
     }
     _normalizeFetchEntityArgs(args) {
         if (args.identifier && typeof args.identifier.type === 'object' && args.identifier.type !== null) {

@@ -15,12 +15,18 @@ class RunManager {
     static createRun(params) {
         const now = new Date().toISOString();
         const runId = `run_${(0, uuid_1.v4)()}`;
+        const planId = `plan_${(0, uuid_1.v4)()}`;
         const truncatedContext = params.contextMessages?.map(msg => ({
             ...msg,
             content: msg.content ? msg.content.substring(0, 500) + (msg.content.length > 500 ? '...' : '') : null,
         })).slice(-10);
+        const toolsWithStepIds = params.toolExecutionPlan.map((step, index) => ({
+            ...step,
+            stepId: step.stepId ?? `step_${index + 1}`,
+        }));
         const run = {
             id: runId,
+            planId,
             sessionId: params.sessionId,
             userId: params.userId,
             connectionId: params.connectionId,
@@ -28,43 +34,43 @@ class RunManager {
             contextMessages: truncatedContext,
             status: 'pending',
             startedAt: now,
-            tools: params.toolExecutionPlan,
             initiatedBy: 'assistant',
             parentRunId: '',
-            toolExecutionPlan: [],
+            toolExecutionPlan: toolsWithStepIds,
             completedAt: ''
         };
-        logger.info(`Run object created in memory.`, { runId, status: 'pending' });
+        logger.info(`Run object created in memory.`, { runId, planId, status: 'pending' });
         return run;
     }
     static addToolResult(run, toolCallId, result) {
-        const toolIndex = run.tools.findIndex((t) => t.toolCall.id === toolCallId);
+        const toolIndex = run.toolExecutionPlan.findIndex((t) => t.toolCall.id === toolCallId);
         if (toolIndex !== -1) {
-            run.tools[toolIndex].status = result.status;
-            run.tools[toolIndex].result = result.data;
-            run.tools[toolIndex].error = result.error;
-            run.tools[toolIndex].finishedAt = new Date().toISOString();
+            run.toolExecutionPlan[toolIndex].status = result.status === 'success' ? 'completed' : 'failed';
+            run.toolExecutionPlan[toolIndex].result = result;
+            run.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
         }
         return run;
     }
     static startToolExecution(run, toolCallId) {
-        const toolMeta = run.tools.find((t) => t.toolCall.id === toolCallId);
+        const toolMeta = run.toolExecutionPlan.find((t) => t.toolCall.id === toolCallId);
         if (toolMeta) {
             toolMeta.startedAt = new Date().toISOString();
+            toolMeta.status = 'running';
             run.status = 'running';
             logger.info(`Updated run in memory: tool execution started.`, { runId: run.id, toolCallId });
         }
         return run;
     }
     static recordToolResult(run, toolCallId, result) {
-        const toolMeta = run.tools.find((t) => t.toolCall.id === toolCallId);
+        const toolMeta = run.toolExecutionPlan.find((t) => t.toolCall.id === toolCallId);
         if (!toolMeta) {
             logger.warn(`Could not find tool with toolCallId "${toolCallId}" in run "${run.id}" to record result.`);
             return run;
         }
         const now = new Date().toISOString();
-        toolMeta.completedAt = now;
-        toolMeta.result = { ...result, toolCallId, startedAt: toolMeta.startedAt, completedAt: now };
+        toolMeta.finishedAt = now;
+        toolMeta.status = result.status === 'success' ? 'completed' : 'failed';
+        toolMeta.result = result;
         logger.info(`Updated run in memory: tool result recorded.`, { runId: run.id, toolCallId, status: result.status });
         return run;
     }
@@ -74,23 +80,29 @@ class RunManager {
         return run;
     }
     static finalizeRun(run) {
-        const allToolsCompleted = run.tools.every((t) => !!t.result);
+        const allToolsCompleted = run.toolExecutionPlan.every((t) => !!t.result);
         if (!allToolsCompleted) {
             logger.info(`Run ${run.id} will not be finalized yet; waiting for more tool results.`);
             return run;
         }
         const now = new Date().toISOString();
         run.completedAt = now;
-        const results = run.tools.map((t) => t.result?.status);
+        const results = run.toolExecutionPlan
+            .map((t) => t.result?.status)
+            .filter((status) => !!status);
         const successCount = results.filter((r) => r === 'success').length;
-        if (results.length === 0)
+        if (results.length === 0) {
             run.status = 'failed';
-        else if (successCount === results.length)
-            run.status = 'success';
-        else if (successCount > 0)
+        }
+        else if (successCount === results.length) {
+            run.status = 'completed';
+        }
+        else if (successCount > 0) {
             run.status = 'partial_success';
-        else
+        }
+        else {
             run.status = 'failed';
+        }
         logger.info(`Updated run in memory: run finalized.`, { runId: run.id, finalStatus: run.status });
         return run;
     }

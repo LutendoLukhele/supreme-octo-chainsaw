@@ -3,7 +3,6 @@
 import Groq from 'groq-sdk';
 import winston from 'winston';
 import { FOLLOW_UP_PROMPT_TEMPLATE } from './followUpPrompt';
-import { ToolConfigManager } from './tool/ToolConfigManager';
 import { ToolCall } from './tool/tool.types';
 import { Run } from './tool/run.types';
 import { ActiveAction } from '../action-launcher.service';
@@ -19,8 +18,7 @@ export class FollowUpService {
     constructor(
         private client: Groq,
         private model: string,
-        private maxTokens: number,
-        private toolConfigManager: ToolConfigManager
+        private maxTokens: number
     ) {}
 
     /**
@@ -39,47 +37,38 @@ export class FollowUpService {
   }
 
   const { toolName, data } = lastStep.result;
-  
-  // --- START OF ENHANCED LOGIC ---
-
-  // 1. Create a summary of the tool's output for the AI.
-  let toolOutputSummary = `The action '${toolName}' completed successfully.`;
-  if (toolName === 'fetch_emails' && data?.emails) {
-    const emailCount = data.emails.length;
-    const firstEmailSubject = emailCount > 0 ? data.emails[0].subject : 'N/A';
-    toolOutputSummary = `I just ran the 'fetch_emails' tool and found ${emailCount} emails. The subject of the most recent email is "${firstEmailSubject}".`;
-  } else if (toolName === 'fetch_entity' && data?.data?.records) {
-    const recordCount = data.data.records.length;
-    const firstRecordName = recordCount > 0 ? data.data.records[0].name : 'N/A';
-    toolOutputSummary = `I just ran the 'fetch_entity' tool and found ${recordCount} records. The first record is named "${firstRecordName}".`;
-  }
+  const toolResultJson = JSON.stringify(data, null, 2);
 
   // 2. Construct a prompt for the LLM.
-  const prompt = `
-    You are an AI assistant. A tool has just been successfully executed on your behalf.
-    The user's original request was: "${run.userInput}"
-    Tool Execution Result: "${toolOutputSummary}"
-    
-    Based on this, formulate a brief, natural, and helpful follow-up message for the user.
-    Summarize what you found and ask what they would like to do next with the information.
-    Do not mention that a "tool" was run. Just speak naturally.
-  `;
+  // Using the more detailed prompt template to get a better summary.
+  const prompt = FOLLOW_UP_PROMPT_TEMPLATE
+    .replace('{{USER_INITIAL_QUERY}}', run.userInput)
+    .replace('{{PREVIOUS_TOOL_RESULT_JSON}}', toolResultJson)
+    // For now, we are only generating a summary, so we provide dummy data for the next tool.
+    .replace('{{NEXT_TOOL_NAME}}', "n/a")
+    .replace('{{NEXT_TOOL_DESCRIPTION}}', "Not applicable for this step.")
+    .replace('{{NEXT_TOOL_PARAMETERS_JSON}}', "{}");
 
   // 3. Call the LLM to generate the conversational response.
   try {
     const chatCompletion = await this.client.chat.completions.create({
         messages: [{ role: 'user', content: prompt }],
         model: this.model,
+        response_format: { type: "json_object" },
         max_tokens: this.maxTokens,
     });
     
-    const summary = chatCompletion.choices[0]?.message?.content || null;
-    return { summary, nextToolCall: null };
+    const responseContent = chatCompletion.choices[0]?.message?.content;
+    if (!responseContent) return { summary: "The action was successful.", nextToolCall: null };
+
+    const parsedResponse = JSON.parse(responseContent);
+    const summary = parsedResponse.summary || "The action completed successfully.";
+    return { summary, nextToolCall: null }; // nextToolCall can be implemented later
 
   } catch (error) {
     logger.error('Failed to generate AI follow-up from Groq.', { error });
-    // Fallback to the simple summary if the AI call fails
-    return { summary: toolOutputSummary, nextToolCall: null };
+    // Fallback to a simple summary if the AI call fails
+    return { summary: `The action '${toolName}' completed successfully.`, nextToolCall: null };
   }
 }
 }

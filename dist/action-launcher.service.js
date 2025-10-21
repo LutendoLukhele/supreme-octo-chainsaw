@@ -13,28 +13,52 @@ const logger = winston_1.default.createLogger({
     transports: [new winston_1.default.transports.Console()],
 });
 class ActionLauncherService extends events_1.EventEmitter {
+    constructor(conversationService, toolConfigManager, beatEngine) {
+        super();
+        this.conversationService = conversationService;
+        this.toolConfigManager = toolConfigManager;
+        this.beatEngine = beatEngine;
+        this.activeActions = new Map();
+        logger.info("ActionLauncherService initialized.");
+    }
     async processActionPlan(actionPlan, sessionId, userId, messageId, activeRun) {
-        logger.info(`Processing action plan for session ${sessionId}.`, { numItems: actionPlan.length });
+        logger.info('ActionLauncher: Processing action plan', {
+            sessionId,
+            numItems: actionPlan.length,
+            planIds: actionPlan.map(p => ({ id: p.id, tool: p.tool }))
+        });
         const clientActionsToConfirm = [];
         const clientActionsNeedingParams = [];
         for (const planItem of actionPlan) {
             const toolName = planItem.tool;
-            let actualToolArgs = planItem.arguments || {};
+            const actualToolArgs = planItem.arguments || {};
+            const actionId = planItem.id;
+            logger.info('ActionLauncher: Processing plan item', {
+                sessionId,
+                actionId,
+                toolName,
+                arguments: actualToolArgs
+            });
             const missingRequired = this.toolConfigManager.findMissingRequiredParams(toolName, actualToolArgs);
             const missingConditional = this.toolConfigManager.findConditionallyMissingParams(toolName, actualToolArgs);
             const serverSideMissingParams = [...new Set([...missingRequired, ...missingConditional])];
             const serverDeterminedStatus = serverSideMissingParams.length > 0 ? 'collecting_parameters' : 'ready';
             const newActiveAction = this._createAndStoreAction({
-                sessionId, messageId,
-                actionId: planItem.id || (0, uuid_1.v4)(),
+                sessionId,
+                messageId,
+                actionId: actionId,
                 toolName: toolName,
                 description: planItem.intent,
-                arguments: planItem.arguments || {},
+                arguments: actualToolArgs,
                 missingParameters: serverSideMissingParams,
                 initialStatus: serverDeterminedStatus,
-                actionVerb: '',
-                objectNoun: '',
                 parameters: []
+            });
+            logger.info('ActionLauncher: Stored action with ID', {
+                sessionId,
+                storedActionId: newActiveAction.id,
+                toolName: newActiveAction.toolName,
+                status: newActiveAction.status
             });
             if (serverDeterminedStatus === 'collecting_parameters') {
                 clientActionsNeedingParams.push(newActiveAction);
@@ -43,11 +67,15 @@ class ActionLauncherService extends events_1.EventEmitter {
                 clientActionsToConfirm.push(newActiveAction);
             }
         }
+        logger.info('ActionLauncher: All actions stored', {
+            sessionId,
+            storedActionIds: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
+        });
         if (clientActionsNeedingParams.length > 0) {
             const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;
             this.emit('send_chunk', sessionId, {
                 type: 'parameter_collection_required',
-                content: { actions: clientActionsNeedingParams, analysis: analysisText, messageId, },
+                content: { actions: clientActionsNeedingParams, analysis: analysisText, messageId },
             });
         }
         if (clientActionsToConfirm.length > 0) {
@@ -57,14 +85,6 @@ class ActionLauncherService extends events_1.EventEmitter {
                 content: { actions: clientActionsToConfirm, analysis: analysisText, messageId },
             });
         }
-    }
-    constructor(conversationService, toolConfigManager, beatEngine) {
-        super();
-        this.conversationService = conversationService;
-        this.toolConfigManager = toolConfigManager;
-        this.beatEngine = beatEngine;
-        this.activeActions = new Map();
-        logger.info("ActionLauncherService initialized.");
     }
     async initiateServerSideParameterCollection(sessionId, userId, originalUserMessageId, intendedToolName, allMissingParams, llmProvidedArgs) {
         logger.info(`Server initiating parameter collection for ${intendedToolName}. Missing: ${allMissingParams.join(', ')}`, { sessionId });
@@ -114,22 +134,24 @@ class ActionLauncherService extends events_1.EventEmitter {
         }
         else {
             clientParameters = allMissingParams.map(name => ({
-                name: name, description: `Missing: ${name}`, required: true, type: 'string',
-                currentValue: llmProvidedArgs[name], hint: undefined
+                name: name,
+                description: `Missing: ${name}`,
+                required: true,
+                type: 'string',
+                currentValue: llmProvidedArgs[name],
+                hint: undefined
             }));
         }
         const actionForClient = this._createAndStoreAction({
             sessionId,
             messageId: originalUserMessageId,
             actionId: parameterCollectionActionId,
-            actionVerb: "execute",
-            objectNoun: intendedToolName,
             toolName: intendedToolName,
             description: clarificationQuestion,
             parameters: clientParameters,
             missingParameters: allMissingParams,
             initialStatus: 'collecting_parameters',
-            arguments: {}
+            arguments: llmProvidedArgs
         });
         messagesToSend.push({
             type: "parameter_collection_required",
@@ -175,13 +197,33 @@ class ActionLauncherService extends events_1.EventEmitter {
         }
         return action;
     }
-    async executeAction(sessionId, userId, payload, toolOrchestrator) {
+    async executeAction(sessionId, userId, payload, toolOrchestrator, planId, stepId) {
         const { actionId, toolName } = payload;
-        logger.info('Executing action via launcher', { sessionId, actionId, userId });
+        logger.info('ActionLauncher: Executing action', {
+            sessionId,
+            actionId,
+            toolName,
+            userId,
+            planId,
+            stepId,
+            availableActionIds: Array.from(this.activeActions.get(sessionId)?.keys() || [])
+        });
         const action = this.getAction(sessionId, actionId);
-        if (!action)
+        if (!action) {
+            logger.error('ActionLauncher: Action not found', {
+                sessionId,
+                requestedActionId: actionId,
+                availableActions: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
+            });
             throw new Error(`Action ${actionId} not found`);
+        }
         const finalArgs = action.arguments || {};
+        logger.info('ActionLauncher: Using stored arguments', {
+            sessionId,
+            actionId,
+            toolName,
+            arguments: finalArgs
+        });
         action.status = 'executing';
         try {
             const toolCall = {
@@ -191,16 +233,26 @@ class ActionLauncherService extends events_1.EventEmitter {
                 id: actionId,
                 userId: userId,
             };
-            const result = await toolOrchestrator.executeTool(toolCall);
+            const result = await toolOrchestrator.executeTool(toolCall, planId, stepId);
             action.result = result.data;
             action.status = result.status === 'success' ? 'completed' : 'failed';
             action.error = result.status === 'failed' ? result.error : undefined;
+            logger.info('ActionLauncher: Action completed', {
+                sessionId,
+                actionId,
+                status: action.status
+            });
             return action;
         }
         catch (error) {
             action.status = 'failed';
             action.error = error instanceof Error ? error.message : String(error);
             action.result = null;
+            logger.error('ActionLauncher: Action execution failed', {
+                sessionId,
+                actionId,
+                error: action.error
+            });
             throw error;
         }
     }
@@ -216,19 +268,29 @@ class ActionLauncherService extends events_1.EventEmitter {
         logger.info('Cleared actions for session', { sessionId });
     }
     _createAndStoreAction(details) {
-        const colorMap = {};
-        const iconMap = {};
+        const iconMap = {
+            'fetch_emails': 'mail',
+            'sendEmail': 'send',
+            'createCalendarEvent': 'calendar',
+            'updateSalesforceContact': 'contact',
+            'searchContacts': 'search',
+        };
         const newAction = {
             id: details.actionId,
             arguments: details.arguments,
-            action: details.actionVerb, object: details.objectNoun, toolName: details.toolName,
-            description: details.description, parameters: details.parameters,
-            missingParameters: details.missingParameters, status: details.initialStatus,
+            toolName: details.toolName,
+            description: details.description,
+            parameters: details.parameters,
+            missingParameters: details.missingParameters,
+            status: details.initialStatus,
             messageId: details.messageId,
-            bgColor: colorMap[details.actionVerb.toLowerCase()] || '#9E9E9E',
+            bgColor: '#6366f1',
             icon: iconMap[details.toolName] || 'settings',
-            result: null, error: undefined,
-            toolDisplayName: this.toolConfigManager.getToolDisplayName(details.toolName) || details.toolName.replace(/_/g, ' ')
+            result: null,
+            error: undefined,
+            toolDisplayName: this.toolConfigManager.getToolDisplayName(details.toolName) || details.toolName.replace(/_/g, ' '),
+            action: '',
+            object: ''
         };
         let sessionActionMap = this.activeActions.get(details.sessionId);
         if (!sessionActionMap) {
@@ -236,7 +298,12 @@ class ActionLauncherService extends events_1.EventEmitter {
             this.activeActions.set(details.sessionId, sessionActionMap);
         }
         sessionActionMap.set(details.actionId, newAction);
-        logger.info(`Stored new action`, { sessionId: details.sessionId, actionId: details.actionId, toolName: details.toolName });
+        logger.info('ActionLauncher: Stored new action', {
+            sessionId: details.sessionId,
+            actionId: details.actionId,
+            toolName: details.toolName,
+            hasArguments: Object.keys(details.arguments).length > 0
+        });
         return newAction;
     }
 }

@@ -82,6 +82,9 @@ class ToolConfigManager {
     getToolDefinition(toolName) {
         return this.toolMap.get(toolName);
     }
+    getToolByName(toolName) {
+        return this.toolMap.get(toolName);
+    }
     getToolDisplayName(toolName) {
         const tool = this.getToolDefinition(toolName);
         return tool?.display_name || tool?.name.replace(/_/g, ' ');

@@ -4,9 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PlannerService = void 0;
-const events_1 = require("events");
-const openai_1 = __importDefault(require("openai"));
+const openai_1 = require("openai");
+const uuid_1 = require("uuid");
 const winston_1 = __importDefault(require("winston"));
+const events_1 = require("events");
+const types_1 = require("./conversation/types");
 const dedicatedPlannerPrompt_1 = require("./conversation/prompts/dedicatedPlannerPrompt");
 const logger = winston_1.default.createLogger({
     level: 'info',
@@ -14,13 +16,215 @@ const logger = winston_1.default.createLogger({
     transports: [new winston_1.default.transports.Console()],
 });
 class PlannerService extends events_1.EventEmitter {
-    constructor(openAIApiKey, model, maxTokens, toolConfigManager) {
+    constructor(openaiApiKey, maxTokens, toolConfigManager) {
         super();
-        this.client = new openai_1.default({ apiKey: openAIApiKey });
-        this.model = model;
+        this.openaiClient = new openai_1.OpenAI({ apiKey: openaiApiKey });
         this.maxTokens = maxTokens;
         this.toolConfigManager = toolConfigManager;
-        logger.info('PlannerService initialized with self-managed OpenAI client.');
+    }
+    async generatePlanWithStepAnnouncements(userInput, toolCalls, sessionId, messageId) {
+        const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId);
+        if (plan && plan.length > 0) {
+            plan.forEach((step, index) => {
+                step.stepNumber = index + 1;
+                step.totalSteps = plan.length;
+            });
+            await this.streamPlanSummary(userInput, plan, sessionId);
+        }
+        return plan;
+    }
+    async streamPlanSummary(userInput, plan, sessionId) {
+        const summaryMessageId = (0, uuid_1.v4)();
+        const planDescriptions = plan.map(step => this.getToolFriendlyName(step.tool));
+        const summaryPrompt = `Generate a brief, natural summary (max 30 words) of this execution plan.
+User request: "${userInput}"
+Actions to execute: ${planDescriptions.join(', ')}
+
+Be specific but concise. Example: "I'll fetch your recent emails and then create a meeting with the team for tomorrow."`;
+        try {
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: summaryMessageId,
+                messageType: types_1.MessageType.PLAN_SUMMARY
+            });
+            const response = await this.openaiClient.chat.completions.create({
+                model: PlannerService.MODEL,
+                messages: [{ role: 'system', content: summaryPrompt }],
+                max_tokens: 100,
+                stream: true,
+                temperature: 0.5,
+            });
+            let fullSummary = '';
+            for await (const chunk of response) {
+                const content = chunk.choices[0]?.delta?.content;
+                if (content) {
+                    fullSummary += content;
+                    this.emit('send_chunk', sessionId, {
+                        type: 'conversational_text_segment',
+                        content: {
+                            status: 'STREAMING',
+                            segment: { segment: content, styles: [], type: 'text' }
+                        },
+                        messageId: summaryMessageId,
+                        messageType: types_1.MessageType.PLAN_SUMMARY
+                    });
+                }
+            }
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: summaryMessageId,
+                isFinal: true,
+                messageType: types_1.MessageType.PLAN_SUMMARY
+            });
+            logger.info('Streamed plan summary', { sessionId, summary: fullSummary });
+        }
+        catch (error) {
+            logger.error('Failed to generate plan summary', { error, sessionId });
+        }
+    }
+    async streamStepAnnouncement(step, sessionId) {
+        const stepMessageId = (0, uuid_1.v4)();
+        const totalSteps = step.totalSteps ?? 1;
+        const stepPrefix = totalSteps > 1
+            ? `Step ${step.stepNumber} of ${totalSteps}: `
+            : '';
+        const announcementPrompt = `Generate a brief, specific action announcement (max 25 words).
+${stepPrefix}Executing: ${step.tool}
+Intent: ${step.intent}
+Key parameters: ${JSON.stringify(step.arguments, null, 2).slice(0, 200)}
+
+Be specific about what's being done.`;
+        try {
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: stepMessageId,
+                messageType: types_1.MessageType.STEP_ANNOUNCEMENT,
+                metadata: { stepNumber: step.stepNumber, totalSteps: step.totalSteps }
+            });
+            const response = await this.openaiClient.chat.completions.create({
+                model: PlannerService.MODEL,
+                messages: [{ role: 'system', content: announcementPrompt }],
+                max_tokens: 80,
+                stream: true,
+                temperature: 0.5,
+            });
+            for await (const chunk of response) {
+                const content = chunk.choices[0]?.delta?.content;
+                if (content) {
+                    this.emit('send_chunk', sessionId, {
+                        type: 'conversational_text_segment',
+                        content: {
+                            status: 'STREAMING',
+                            segment: { segment: content, styles: [], type: 'text' }
+                        },
+                        messageId: stepMessageId,
+                        messageType: types_1.MessageType.STEP_ANNOUNCEMENT
+                    });
+                }
+            }
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: stepMessageId,
+                isFinal: true,
+                messageType: types_1.MessageType.STEP_ANNOUNCEMENT
+            });
+        }
+        catch (error) {
+            logger.error('Failed to generate step announcement', { error, sessionId });
+            const fallbackText = `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`;
+            this.streamSimpleMessage(sessionId, stepMessageId, fallbackText, types_1.MessageType.STEP_ANNOUNCEMENT);
+        }
+        const plannerStatus = {
+            type: 'planner_status',
+            content: `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`,
+            messageId: stepMessageId,
+            streamType: 'planner_feedback',
+            isFinal: true,
+        };
+        return plannerStatus;
+    }
+    async streamStepCompletion(step, result, sessionId) {
+        const completionMessageId = (0, uuid_1.v4)();
+        const completionPrompt = `Generate a brief success confirmation (max 20 words) for this completed action:
+Tool: ${step.tool}
+Original intent: ${step.intent}
+Result summary: ${JSON.stringify(result).slice(0, 300)}`;
+        try {
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: completionMessageId,
+                messageType: types_1.MessageType.STEP_COMPLETE
+            });
+            const response = await this.openaiClient.chat.completions.create({
+                model: PlannerService.MODEL,
+                messages: [{ role: 'system', content: completionPrompt }],
+                max_tokens: 60,
+                stream: true,
+                temperature: 0.5,
+            });
+            for await (const chunk of response) {
+                const content = chunk.choices[0]?.delta?.content;
+                if (content) {
+                    this.emit('send_chunk', sessionId, {
+                        type: 'conversational_text_segment',
+                        content: {
+                            status: 'STREAMING',
+                            segment: { segment: content, styles: ['success'], type: 'text' }
+                        },
+                        messageId: completionMessageId,
+                        messageType: types_1.MessageType.STEP_COMPLETE
+                    });
+                }
+            }
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: completionMessageId,
+                isFinal: true,
+                messageType: types_1.MessageType.STEP_COMPLETE
+            });
+        }
+        catch (error) {
+            logger.error('Failed to generate completion message', { error, sessionId });
+            const fallbackText = `✓ ${this.getToolFriendlyName(step.tool)} completed`;
+            this.streamSimpleMessage(sessionId, completionMessageId, fallbackText, types_1.MessageType.STEP_COMPLETE);
+        }
+    }
+    streamSimpleMessage(sessionId, messageId, text, messageType) {
+        this.emit('send_chunk', sessionId, {
+            type: 'conversational_text_segment',
+            content: { status: 'START_STREAM' },
+            messageId,
+            messageType
+        });
+        this.emit('send_chunk', sessionId, {
+            type: 'conversational_text_segment',
+            content: { status: 'STREAMING', segment: { segment: text, styles: [], type: 'text' } },
+            messageId,
+            messageType
+        });
+        this.emit('send_chunk', sessionId, {
+            type: 'conversational_text_segment',
+            content: { status: 'END_STREAM' },
+            messageId,
+            isFinal: true,
+            messageType
+        });
+    }
+    getToolFriendlyName(toolName) {
+        const friendlyNames = {
+            'fetch_emails': 'email fetching',
+            'sendEmail': 'email sending',
+            'createCalendarEvent': 'calendar event creation',
+            'updateSalesforceContact': 'Salesforce update',
+            'searchContacts': 'contact search',
+        };
+        return friendlyNames[toolName] || toolName.replace(/_/g, ' ');
     }
     async generatePlan(userInput, identifiedToolCalls, sessionId, clientMessageId) {
         logger.info('PlannerService: Generating action plan', {
@@ -29,18 +233,19 @@ class PlannerService extends events_1.EventEmitter {
             numIdentifiedTools: identifiedToolCalls.length,
             identifiedToolNames: identifiedToolCalls.map(tc => tc.name)
         });
-        this.emit('send_chunk', sessionId, {
+        const plannerStatus = {
             type: 'planner_status',
-            content: 'Formulating a detailed plan...',
+            content: 'Analyzing your request...',
             messageId: clientMessageId,
             streamType: 'planner_feedback',
-            isFinal: true
-        });
+            isFinal: true,
+        };
+        this.emit('send_chunk', sessionId, plannerStatus);
         const availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
         const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
         let identifiedToolsPromptSection = "No tools pre-identified.";
         if (identifiedToolCalls.length > 0) {
-            identifiedToolsPromptSection = "The following tool calls were preliminarily identified (you should verify and integrate them into a coherent plan):\n";
+            identifiedToolsPromptSection = "The following tool calls were preliminarily identified:\n";
             identifiedToolCalls.forEach(tc => {
                 identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
             });
@@ -50,12 +255,12 @@ class PlannerService extends events_1.EventEmitter {
             .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
             .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
         const messagesForApi = [
-            { role: 'system', content: systemPromptContent },
+            { role: 'system', content: systemPromptContent }
         ];
         let accumulatedContent = "";
         try {
-            const responseStream = await this.client.chat.completions.create({
-                model: 'gpt-4.1-nano-2025-04-14',
+            const responseStream = await this.openaiClient.chat.completions.create({
+                model: PlannerService.MODEL,
                 messages: messagesForApi,
                 max_tokens: this.maxTokens,
                 temperature: 0.1,
@@ -64,14 +269,10 @@ class PlannerService extends events_1.EventEmitter {
             });
             for await (const chunk of responseStream) {
                 const contentDelta = chunk.choices[0]?.delta?.content;
-                if (contentDelta) {
+                if (contentDelta)
                     accumulatedContent += contentDelta;
-                }
-                const finishReason = chunk.choices[0]?.finish_reason;
-                if (finishReason) {
-                    logger.info(`Planner LLM stream finished. Reason: ${finishReason}`, { sessionId, finishReason });
+                if (chunk.choices[0]?.finish_reason)
                     break;
-                }
             }
             if (!accumulatedContent) {
                 logger.error('PlannerService: No content from planning LLM', { sessionId });
@@ -79,26 +280,60 @@ class PlannerService extends events_1.EventEmitter {
             }
             const responseObject = JSON.parse(accumulatedContent);
             if (!responseObject.plan || !Array.isArray(responseObject.plan)) {
-                logger.error('PlannerService: LLM response is not in the expected format { "plan": [...] }', { sessionId, response: accumulatedContent });
+                logger.error('PlannerService: Invalid response format', {
+                    sessionId,
+                    responseObject: JSON.stringify(responseObject)
+                });
                 throw new Error('Planner LLM response is not in the expected format.');
             }
-            const actionPlan = responseObject.plan;
-            logger.info(`PlannerService: Plan generated with ${actionPlan.length} actions.`, {
+            const actionPlan = responseObject.plan.map((item, idx) => {
+                const actionId = (0, uuid_1.v4)();
+                logger.info('PlannerService: Creating action step', {
+                    sessionId,
+                    stepNumber: idx + 1,
+                    actionId,
+                    tool: item.tool,
+                    intent: item.intent,
+                    arguments: item.arguments
+                });
+                return {
+                    id: actionId,
+                    intent: item.intent,
+                    tool: item.tool,
+                    arguments: item.arguments || {},
+                    status: 'ready',
+                    stepNumber: idx + 1,
+                    totalSteps: responseObject.plan.length
+                };
+            });
+            logger.info('PlannerService: Complete plan with all IDs', {
                 sessionId,
-                generatedPlan: JSON.stringify(actionPlan, null, 2)
+                planLength: actionPlan.length,
+                actionIds: actionPlan.map(step => ({ id: step.id, tool: step.tool })),
+                fullPlan: JSON.stringify(actionPlan, null, 2)
+            });
+            this.emit('send_chunk', sessionId, {
+                type: 'plan_generated',
+                messageId: clientMessageId,
+                content: {
+                    summary: `Plan contains ${actionPlan.length} actions.`,
+                    steps: actionPlan
+                },
+                streamType: 'planner_feedback',
+                isFinal: true
             });
             return actionPlan;
         }
         catch (error) {
-            logger.error('PlannerService: Error generating action plan', { error: error.message, sessionId });
+            logger.error('PlannerService: Error generating action plan', {
+                error: error.message,
+                errorStack: error.stack,
+                accumulatedContent: accumulatedContent?.substring(0, 1000),
+                sessionId
+            });
             return [];
         }
     }
-    emit(event, ...args) {
-        return super.emit(event, ...args);
-    }
-    on(event, listener) {
-        return super.on(event, listener);
-    }
 }
 exports.PlannerService = PlannerService;
+PlannerService.MODEL = 'gpt-4o-mini';

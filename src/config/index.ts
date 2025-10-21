@@ -52,7 +52,7 @@ export const CONFIG = {
     OPEN_AI_API_KEY: getEnvVar('OPEN_AI_API_KEY', undefined, true), // Mark as critical
     GROQ_API_KEY: getEnvVar('GROQ_API_KEY', undefined, true),       // Mark as critical
     CONNECTION_ID: getEnvVar('CONNECTION_ID', '2154ba8d-ce48-4a46-b4d3-295f1aa9e450'), // User-specific, might not always be in .env
-    MODEL_NAME: getEnvVar('MODEL_NAME', 'llama-3.3-70b-versatile'),
+    MODEL_NAME: getEnvVar('MODEL_NAME', 'openai/gpt-oss-20b'),
     MAX_TOKENS: parseInt(getEnvVar('MAX_TOKENS', '1000')),
     STREAM_CHUNK_SIZE: parseInt(getEnvVar('STREAM_CHUNK_SIZE', '100')),
     TOOL_CONFIG_PATH: getEnvVar('TOOL_CONFIG_PATH', './config/tool-config.json'),

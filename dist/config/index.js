@@ -54,8 +54,7 @@ exports.CONFIG = {
     NANGO_BASE_URL: getEnvVar('NANGO_BASE_URL', 'https://api.nango.dev'),
     FIREBASE_API_KEY: getEnvVar('FIREBASE_API_KEY'),
     FIREBASE_AUTH_DOMAIN: getEnvVar('FIREBASE_AUTH_DOMAIN'),
-    FIREBASE_DATABASE_URL: getEnvVar('FIREBASE_DATABASE_URL', undefined, true),
-    FIREBASE_PROJECT_ID: getEnvVar('FIREBASE_PROJECT_ID', undefined, true),
+    FIREBASE_PROJECT_ID: getEnvVar('FIREBASE_PROJECT_ID'),
     FIREBASE_STORAGE_BUCKET: getEnvVar('FIREBASE_STORAGE_BUCKET'),
     FIREBASE_MESSAGING_SENDER_ID: getEnvVar('FIREBASE_MESSAGING_SENDER_ID'),
     FIREBASE_APP_ID: getEnvVar('FIREBASE_APP_ID'),
@@ -66,7 +65,3 @@ exports.CONFIG = {
 };
 console.log('[config/index.ts] Final CONFIG object (Firebase relevant parts):');
 console.log(`[config/index.ts]   CONFIG.FIREBASE_PROJECT_ID: '${exports.CONFIG.FIREBASE_PROJECT_ID}'`);
-console.log(`[config/index.ts]   CONFIG.FIREBASE_DATABASE_URL: '${exports.CONFIG.FIREBASE_DATABASE_URL}'`);
-if (!exports.CONFIG.FIREBASE_PROJECT_ID || !exports.CONFIG.FIREBASE_DATABASE_URL) {
-    console.error("[config/index.ts] POST-CONFIG CHECK: CRITICAL - FIREBASE_PROJECT_ID or FIREBASE_DATABASE_URL is missing or empty in the final CONFIG object. Firebase initialization will likely fail.");
-}

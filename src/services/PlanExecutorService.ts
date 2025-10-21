@@ -18,7 +18,7 @@ export class PlanExecutorService {
     private streamManager: StreamManager
   ) {}
 
-  public async executePlan(run: Run, userId: string): Promise<void> {
+  public async executePlan(run: Run, userId: string): Promise<Run> {
     logger.info('Starting automatic plan execution', { runId: run.id, planId: run.planId });
 
     this.streamManager.sendChunk(run.sessionId, {
@@ -27,6 +27,11 @@ export class PlanExecutorService {
     });
 
     for (const step of run.toolExecutionPlan) {
+      if (step.status === 'completed') {
+        logger.info(`Skipping already completed step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
+        continue;
+      }
+
       logger.info(`Executing step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
 
       try {
@@ -67,7 +72,7 @@ export class PlanExecutorService {
           logger.error('Step failed, halting plan execution.', { runId: run.id, stepId: step.stepId, error: completedAction.error });
           run.status = 'failed';
           this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
-          return;
+          return run;
         }
       } catch (error: any) {
         logger.error('An unexpected error occurred during step execution, halting plan.', {
@@ -77,7 +82,7 @@ export class PlanExecutorService {
         });
         run.status = 'failed';
         this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
-        return;
+        return run;
       }
     }
 
@@ -85,5 +90,6 @@ export class PlanExecutorService {
     run.status = 'completed';
     run.completedAt = new Date().toISOString();
     this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
+    return run;
   }
 }

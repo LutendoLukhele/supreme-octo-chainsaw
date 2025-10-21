@@ -31,15 +31,17 @@ class RunController {
                 sessionId: sessionId,
                 userId: ''
             };
+            const initialStep = {
+                stepId: 'step_1',
+                toolCall: exportToolCall,
+                status: 'pending',
+                startedAt: new Date().toISOString(),
+            };
             let exportRun = RunManager_1.RunManager.createRun({
                 sessionId: sessionId,
                 userId: userId,
                 userInput: `User initiated export: ${toolName}`,
-                toolExecutionPlan: [{
-                        toolCall: exportToolCall, startedAt: new Date().toISOString(),
-                        status: '',
-                        finishedAt: ''
-                    }],
+                toolExecutionPlan: [initialStep],
                 connectionId: connectionId || parentRun.connectionId,
                 contextMessages: parentRun.contextMessages,
             });
@@ -48,9 +50,11 @@ class RunController {
             this.streamManager.sendChunk(sessionId, { type: 'run_updated', content: exportRun });
             res.status(202).json({ message: "Export run initiated.", runId: exportRun.id });
             try {
+                const planStep = exportRun.toolExecutionPlan.find(step => step.toolCall.id === exportToolCall.id) ?? exportRun.toolExecutionPlan[0];
+                const planStepId = planStep?.stepId ?? 'step_1';
                 exportRun = RunManager_1.RunManager.startToolExecution(exportRun, exportToolCall.id);
                 this.streamManager.sendChunk(sessionId, { type: 'run_updated', content: exportRun });
-                const result = await this.toolOrchestrator.executeTool(exportToolCall);
+                const result = await this.toolOrchestrator.executeTool(exportToolCall, exportRun.planId, planStepId);
                 exportRun = RunManager_1.RunManager.recordToolResult(exportRun, exportToolCall.id, result);
                 this.streamManager.sendChunk(sessionId, { type: 'run_updated', content: exportRun });
             }
