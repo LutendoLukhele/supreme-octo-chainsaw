@@ -155,11 +155,11 @@ export class NangoService {
   // --- FIX: This method is now fully aligned with all Salesforce Nango scripts ---
   // Replace the existing triggerSalesforceAction method with this:
 async triggerSalesforceAction(
-  providerConfigKey: string,
-  connectionId: string,
-  actionPayload: Record<string, any>
+    providerConfigKey: string,
+    connectionId: string,
+    actionPayload: Record<string, any>
 ): Promise<NangoResponse> {
-  // Determine the Nango action name based on the operation
+    // Determine the Nango action name based on the operation
   let actionName: string;
   switch (actionPayload.operation) {
     case 'fetch':

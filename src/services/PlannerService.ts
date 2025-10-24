@@ -298,6 +298,64 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
     }
   }
 
+  async streamSingleActionAnnouncement(
+    step: ActionStep,
+    sessionId: string
+  ): Promise<void> {
+    const messageId = uuidv4();
+    const announcementPrompt = `Generate a brief, specific action announcement (max 25 words) for a single action.
+Executing: ${step.tool}
+Intent: ${step.intent}
+Key parameters: ${JSON.stringify(step.arguments, null, 2).slice(0, 200)}
+
+Be specific about what's being done. Example: "Okay, sending an email to John Doe."`;
+
+    try {
+      this.emit('send_chunk', sessionId, {
+        type: 'conversational_text_segment',
+        content: { status: 'START_STREAM' },
+        messageId: messageId,
+        messageType: MessageType.TOOL_EXECUTION, // Using TOOL_EXECUTION as requested
+      });
+
+      const response = await this.groqClient.chat.completions.create({
+        model: PlannerService.MODEL,
+        messages: [{ role: 'system', content: announcementPrompt }],
+        max_tokens: 80,
+        stream: true,
+        temperature: 0.5,
+      });
+
+      for await (const chunk of response) {
+        const content = chunk.choices[0]?.delta?.content;
+        if (content) {
+          this.emit('send_chunk', sessionId, {
+            type: 'conversational_text_segment',
+            content: {
+              status: 'STREAMING',
+              segment: { segment: content, styles: [], type: 'text' }
+            },
+            messageId: messageId,
+            messageType: MessageType.TOOL_EXECUTION
+          });
+        }
+      }
+
+      this.emit('send_chunk', sessionId, {
+        type: 'conversational_text_segment',
+        content: { status: 'END_STREAM' },
+        messageId: messageId,
+        isFinal: true,
+        messageType: MessageType.TOOL_EXECUTION
+      });
+    } catch (error) {
+      logger.error('Failed to generate single action announcement', { error, sessionId });
+      const fallbackText = `Executing ${this.getToolFriendlyName(step.tool)}...`;
+      this.streamSimpleMessage(sessionId, messageId, fallbackText, MessageType.TOOL_EXECUTION);
+    }
+  }
+
+
   private streamSimpleMessage(
     sessionId: string,
     messageId: string,

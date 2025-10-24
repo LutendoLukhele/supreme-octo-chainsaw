@@ -122,7 +122,7 @@ export class ToolOrchestrator extends BaseService {
             case 'create_entity':
             case 'update_entity':
             case 'fetch_entity':
-                return this.nangoService.triggerSalesforceAction(providerConfigKey, connectionId, args);
+                return this.nangoService.triggerSalesforceAction(providerConfigKey, connectionId, args as any);
             case 'create_zoom_meeting':
                 return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
             default:
@@ -130,4 +130,3 @@ export class ToolOrchestrator extends BaseService {
         }
     }
 }
-

@@ -577,6 +577,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                     status: 'ready', // Assume ready, ActionLauncher will verify
                 }];
 
+                // Announce the single action to the user for better feedback
+                await plannerService.streamSingleActionAnnouncement(singleStepPlan[0], sessionId);
+
                 // CRITICAL FIX: Populate the run object's plan *before* execution.
                 run.toolExecutionPlan = singleStepPlan.map((step: ActionStep) => ({
                     stepId: step.id,
@@ -597,6 +600,45 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
                 const actions = actionLauncherService.getActiveActions(sessionId);
                 const needsUserInput = actions.some(a => a.status === 'collecting_parameters');
+
+                // Enrich the plan for client UI, regardless of whether input is needed
+                const enrichedPlan = singleStepPlan.map((step: ActionStep) => {
+                    const toolDef: any = toolConfigManager.getToolDefinition(step.tool);
+                    const toolDisplayName = toolDef?.display_name || toolDef?.name || step.tool;
+                    const parameters: any[] = [];
+                    if (toolDef?.parameters?.properties) {
+                        const props = toolDef.parameters.properties;
+                        const required = toolDef.parameters.required || [];
+                        Object.keys(props).forEach((paramName) => {
+                            const prop = props[paramName];
+                            parameters.push({
+                                name: paramName, type: prop.type || 'string', description: prop.description || '',
+                                required: required.includes(paramName), hint: prop.hint || null,
+                                enumValues: prop.enum || null, currentValue: step.arguments?.[paramName] || null
+                            });
+                        });
+                    }
+                    // If there are active actions, use their state for enrichment
+                    const activeAction = actions.find(a => a.id === step.id);
+                    return {
+                        id: step.id, messageId, toolName: step.tool, toolDisplayName,
+                        description: activeAction?.description || step.intent, 
+                        status: activeAction?.status || step.status, 
+                        arguments: activeAction?.arguments || step.arguments || {},
+                        parameters: activeAction?.parameters || parameters, 
+                        missingParameters: activeAction?.missingParameters || [], 
+                        error: null, 
+                        result: null
+                    };
+                });
+
+                // Send the simulated plan to the client
+                streamManager.sendChunk(sessionId, {
+                    type: 'plan_generated',
+                    content: { messageId, planOverview: enrichedPlan, analysis: `Preparing to execute action.` },
+                    messageId, isFinal: true,
+                } as StreamChunk);
+
 
                 if (!needsUserInput && actions.length > 0) {
                     logger.info('No user input needed for single action, starting auto-execution.', { sessionId, runId: run.id });
@@ -626,19 +668,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
                 } else if (actions.length > 0) {
                     logger.info('Single action requires user input before execution.', { sessionId });
-                    // The 'parameter_collection_required' event will be fired by ActionLauncherService,
-                    // so we just need to enrich and send the plan to the client.
-                    const enrichedAction = {
-                        id: actions[0].id, messageId, toolName: actions[0].toolName, toolDisplayName: actions[0].toolDisplayName,
-                        description: actions[0].description, status: actions[0].status, arguments: actions[0].arguments,
-                        parameters: actions[0].parameters, missingParameters: actions[0].missingParameters,
-                        error: null, result: null
-                    };
-                    streamManager.sendChunk(sessionId, {
-                        type: 'plan_generated',
-                        content: { messageId, planOverview: [enrichedAction], analysis: `This action requires more information.` },
-                        messageId, isFinal: true,
-                    } as StreamChunk);
+                    // The 'parameter_collection_required' event is fired by ActionLauncherService,
+                    // and we have already sent the plan_generated event above.
                 }
 
             } else if (!conversationalResponse) {
