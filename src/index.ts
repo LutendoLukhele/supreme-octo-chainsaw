@@ -642,7 +642,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
                 if (!needsUserInput && actions.length > 0) {
                     logger.info('No user input needed for single action, starting auto-execution.', { sessionId, runId: run.id });
-                    await planExecutorService.executePlan(run, userId);
+                    // Capture the updated run object returned by the executor
+                    const completedRun = await planExecutorService.executePlan(run, userId);
+                    // Update the session state with the final, completed run object
+                    state.activeRun = completedRun;
+                    await sessionState.setItem(sessionId, state);
                 } else if (actions.length > 0) {
                     logger.info('Single action requires user input before execution.', { sessionId });
                     // The 'parameter_collection_required' event is fired by ActionLauncherService,

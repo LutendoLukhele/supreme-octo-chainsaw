@@ -154,14 +154,11 @@ Instructions:
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'meta-llama/llama-4-maverick-17b-128e-instruct', // Model that supports json_schema
+        model: 'openai/gpt-oss-20b', // Model that supports json_schema
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
-        response_format: {
-          type: 'json_schema',
-          json_schema: { name: `fixed_${toolName}_args`, schema: strictToolSchema, strict: true },
-        } as any, // Cast to any to bypass incorrect SDK typing for json_schema
+        response_format: { type: "json_object" },
       });
 
       const content = response.choices[0]?.message?.content;
@@ -179,7 +176,7 @@ Instructions:
     }
   }
 
-  public async executePlan(run: Run, userId: string): Promise<Run> {
+  public async executePlan(run: Run, userId: string): Promise<Run> { // Ensure the method signature reflects the return
     logger.info('Starting automatic plan execution', { runId: run.id, planId: run.planId });
 
     this.streamManager.sendChunk(run.sessionId, {
