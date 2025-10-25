@@ -134,21 +134,18 @@ export class ConversationService extends EventEmitter {
         let conversationalResponseText = "";
         
         const conversationalStreamPromise = this.runConversationalStream(
-            userMessage || '', initialUserQuery, sessionId, currentMessageId,
-            messageProcessingId, filteredGroqTools as any, [...history], aggregatedToolCallsOutput
+            userMessage, initialUserQuery, sessionId, currentMessageId,
+            messageProcessingId, filteredGroqTools as any, history, aggregatedToolCallsOutput
         ).then(result => {
             conversationalResponseText = result.text;
         });
         
-        const toolCallStreamPromise = this.runToolCallStream(
-            userMessage, sessionId, currentMessageId, messageProcessingId,
-            [...history], aggregatedToolCallsOutput, filteredGroqTools as any
-        );
-        
-        await Promise.allSettled([conversationalStreamPromise, toolCallStreamPromise]);
+        // The dedicated tool call stream is removed. All logic is now in runConversationalStream.
+        await Promise.allSettled([conversationalStreamPromise]);
 
         logger.info('All ConversationService streams have settled.', {
             sessionId,
+            finalAggregatedToolCount: aggregatedToolCallsOutput.length,
             totalToolCalls: aggregatedToolCallsOutput.length,
             conversationalResponseLength: conversationalResponseText.length
         });
@@ -161,12 +158,12 @@ export class ConversationService extends EventEmitter {
     }
 
     private async runConversationalStream(
-        currentUserMessage: string,
+        currentUserMessage: string | null,
         initialUserQuery: string,
         sessionId: string,
         currentMessageId: string,
         messageProcessingId: string,
-        _toolsForThisStream: any[],
+        toolsForThisStream: any[],
         historyForThisStream: Message[],
         aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls']
     ): Promise<ConversationalStreamResult> {
@@ -202,21 +199,26 @@ export class ConversationService extends EventEmitter {
 
             const systemPromptContent = MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE
                 .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage);
+                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '');
 
             const messagesForApi: Message[] = [
                 { role: 'system', content: systemPromptContent },
                 ...this.prepareHistoryForLLM(historyForThisStream)
             ];
 
-            const toolsForThisStream = this.toolConfigManager.getGroqToolsDefinition() || [];
-            toolsForThisStream.push(PLANNER_META_TOOL);
+            // If currentUserMessage is empty, we are in a "summary" mode after a tool call.
+            // In this mode, we should NOT allow the model to call more tools, only generate text.
+            const isSummaryMode = !currentUserMessage;
+            const finalToolsForStream = isSummaryMode ? undefined : [...toolsForThisStream, PLANNER_META_TOOL];
+            if (!isSummaryMode) {
+                logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
+            }
             
             const responseStream = await this.client.chat.completions.create({
                 model: this.model,
                 messages: messagesForApi as any,
                 max_tokens: this.maxTokens,
-                tools: toolsForThisStream,
+                tools: finalToolsForStream, // This will be undefined in summary mode, preventing tool calls
                 stream: true,
                 temperature: 0.5,
             });
@@ -248,6 +250,31 @@ export class ConversationService extends EventEmitter {
                 parser.stopParsing();
             }
 
+            // Process accumulated tool calls from this stream
+            if (accumulatedToolCalls) {
+                logger.info(`Conversational stream identified ${accumulatedToolCalls.length} tool calls.`, { sessionId });
+                accumulatedToolCalls.forEach(tc => {
+                    if (tc.id && tc.function.name) {
+                        try {
+                            // Check for duplicates before adding
+                            if (!aggregatedToolCallsOutput.some(existing => existing.id === tc.id)) {
+                                aggregatedToolCallsOutput.push({
+                                    id: tc.id,
+                                    name: tc.function.name,
+                                    arguments: JSON.parse(tc.function.arguments || '{}'),
+                                    streamType: 'conversational', // Mark the source stream
+                                    function: undefined as any
+                                });
+                                logger.info('Collected tool_call from conversational stream', { name: tc.function.name });
+                            }
+                        } catch (e: any) {
+                            logger.error("Failed to parse tool arguments from conversational stream", { 
+                                args: tc.function.arguments, error: e.message 
+                            });
+                        }
+                    }
+                });
+            }
             // After the stream is complete, add the assistant's text response to history.
             // Tool calls will be handled by the dedicated tool stream.
             const assistantResponse: Message = { role: 'assistant', content: accumulatedText || null };
@@ -271,104 +298,6 @@ export class ConversationService extends EventEmitter {
 
         return {
             text: accumulatedText,
-            hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0)
-        };
-    }
-
-    private async runToolCallStream(
-        currentUserMessage: string | null,
-        sessionId: string,
-        currentMessageId: string,
-        messageProcessingId: string,
-        _historyForThisStream: Message[],
-        aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'],
-        toolsForThisStream: any[]
-    ): Promise<ToolCallStreamResult> {
-        const streamId = `tool_call_${messageProcessingId}`;
-        logger.info('Starting dedicated tool identification stream', { sessionId, streamId });
-        
-        let accumulatedToolCalls: Groq.Chat.Completions.ChatCompletionMessageToolCall[] | null = null;
-        try {
-            // If there's no new user message, we are likely in a follow-up call after a tool result.
-            // In this case, we don't need to run the tool stream again.
-            if (!currentUserMessage) {
-                logger.info('No user message provided; skipping tool call stream.', { sessionId, streamId });
-                return { hasToolCalls: false };
-            }
-
-            const systemPromptContent = DEDICATED_TOOL_CALL_SYSTEM_PROMPT_TEMPLATE
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage)
-                .replace('{{TOOL_DEFINITIONS_JSON}}', JSON.stringify(toolsForThisStream, null, 2));
-            
-            const messagesForApi: Message[] = [
-                { role: 'system', content: systemPromptContent },
-                { role: 'user', content: currentUserMessage }
-            ];
-
-            if (!toolsForThisStream || toolsForThisStream.length === 0) {
-                logger.warn('Tool call stream has no tools to process', { sessionId });
-                return { hasToolCalls: false };
-            }
-
-            const responseStream = await this.client.chat.completions.create({
-                model: this.model,
-                messages: messagesForApi as any,
-                tools: toolsForThisStream,
-                tool_choice: "auto",
-                stream: true,
-            });
-
-            for await (const chunk of responseStream) {
-                const toolCallsDelta = chunk.choices[0]?.delta?.tool_calls;
-                if (toolCallsDelta) {
-                    if (!accumulatedToolCalls) accumulatedToolCalls = [];
-                    this.accumulateToolCallDeltas(accumulatedToolCalls, toolCallsDelta);
-                }
-                const finishReason = chunk.choices[0]?.finish_reason;
-                if (finishReason) {
-                    logger.info(`Tool call stream finished. Reason: ${finishReason}`, { sessionId, streamId });
-                    break;
-                }
-            }
-
-            if (accumulatedToolCalls) {
-                accumulatedToolCalls.forEach(tc => {
-                    if (tc.id && tc.function.name) {
-                        try {
-                            aggregatedToolCallsOutput.push({
-                                id: tc.id,
-                                name: tc.function.name,
-                                arguments: JSON.parse(tc.function.arguments || '{}'),
-                                streamType: 'tool_call',
-                                function: undefined as any
-                            });
-                            logger.info('Dedicated tool stream collected tool_call', { 
-                                name: tc.function.name 
-                            });
-                        } catch (e: any) {
-                            logger.error("Failed to parse tool arguments", { 
-                                args: tc.function.arguments,
-                                error: e.message
-                            });
-                        }
-                    }
-                });
-            }
-        } catch (error: any) {
-            logger.error('Error in tool call stream', { error: error.message, sessionId, streamId });
-        } finally {
-            // Add the tool calls to history AFTER they have been identified
-            if (accumulatedToolCalls && accumulatedToolCalls.length > 0) {
-                const history = this.getHistory(sessionId);
-                const lastMessage = history[history.length - 1];
-                if (lastMessage && lastMessage.role === 'assistant') {
-                    lastMessage.tool_calls = accumulatedToolCalls;
-                }
-            }
-            logger.info('Tool call stream processing complete.', { sessionId, streamId });
-        }
-
-        return {
             hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0)
         };
     }

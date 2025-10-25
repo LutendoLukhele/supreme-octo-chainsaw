@@ -643,29 +643,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 if (!needsUserInput && actions.length > 0) {
                     logger.info('No user input needed for single action, starting auto-execution.', { sessionId, runId: run.id });
                     await planExecutorService.executePlan(run, userId);
-                    
-                    // After auto-execution, generate the final summary response.
-                    if (run.status === 'completed') {
-                        logger.info('Single action auto-execution complete, generating final response.', { sessionId });
-                        
-                        // Add the tool result to history
-                        const step = run.toolExecutionPlan[0];
-                        if (step.status === 'completed' && step.result) {
-                            conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
-                        }
-
-                        // Get the final summary from the LLM
-                        const finalResponseResult = await conversationService.processMessageAndAggregateResults(
-                            null, // No new user message
-                            sessionId,
-                            uuidv4()
-                        );
-
-                        if (finalResponseResult.conversationalResponse?.trim()) {
-                            await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);
-                        }
-                    }
-
                 } else if (actions.length > 0) {
                     logger.info('Single action requires user input before execution.', { sessionId });
                     // The 'parameter_collection_required' event is fired by ActionLauncherService,
@@ -677,6 +654,32 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 await streamText(sessionId, messageId, "I'm not sure how to help with that. Could you rephrase?");
             }
 
+            // --- UNIFIED FINAL RESPONSE LOGIC ---
+            // This block runs after any auto-execution (single or multi-step) is complete.
+            const finalRunState = (await sessionState.getItem(sessionId) as SessionState)?.activeRun;
+            if (finalRunState && finalRunState.status === 'completed' && !finalRunState.assistantResponse) {
+                logger.info('Auto-execution complete, generating final context-aware response.', { sessionId, runId: finalRunState.id });
+
+                // Add all completed tool results to history if not already there
+                finalRunState.toolExecutionPlan.forEach(step => {
+                    if (step.status === 'completed' && step.result) {
+                        conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
+                    }
+                });
+
+                // Get the final summary from the LLM
+                const finalResponseResult = await conversationService.processMessageAndAggregateResults(
+                    null, // No new user message, forces summary mode
+                    sessionId,
+                    uuidv4()
+                );
+
+                if (finalResponseResult.conversationalResponse?.trim()) {
+                    await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);
+                    finalRunState.assistantResponse = finalResponseResult.conversationalResponse; // Mark that response was generated
+                    await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
+                }
+            }
 
             return;
         }
