@@ -358,10 +358,12 @@ export class ActionLauncherService extends EventEmitter {
       action.status = result.status === 'success' ? 'completed' : 'failed';
       action.error = result.status === 'failed' ? result.error : undefined;
       
-      logger.info('ActionLauncher: Action completed', {
+      // Added for debugging data dependencies
+      logger.info('ActionLauncher: Action completed with result', {
         sessionId,
         actionId,
-        status: action.status
+        status: action.status,
+        result: JSON.stringify(action.result, null, 2)
       });
 
       return action;

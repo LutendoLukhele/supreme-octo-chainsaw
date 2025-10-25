@@ -87,7 +87,7 @@ const actionLauncherService = new ActionLauncherService(
     beatEngine,
 );
 
-const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager);
+const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient);
 
 // --- Session State Management ---
 interface SessionState {

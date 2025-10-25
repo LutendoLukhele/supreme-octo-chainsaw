@@ -45,7 +45,7 @@ export class PlannerService extends EventEmitter {
   private toolConfigManager: ToolConfigManager;
 
   // Using Llama 3.3 70B - the most capable model on Groq
-  private static readonly MODEL = 'llama-3.3-70b-versatile';
+  private static readonly MODEL = 'openai/gpt-oss-20b';
 
   constructor(
     groqApiKey: string,
@@ -402,7 +402,7 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
     sessionId: string,
     clientMessageId: string
   ): Promise<ActionPlan> {
-    logger.info('PlannerService: Generating action plan', {
+    logger.info('PlannerService: Generating action plan using structured output', {
       sessionId,
       userInputLength: userInput.length,
       numIdentifiedTools: identifiedToolCalls.length,
@@ -437,41 +437,66 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
 
     const messagesForApi: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPromptContent }, { role: 'user', content: userInput }];
 
-    let accumulatedContent = "";
+    const planSchema = {
+      type: "object",
+      properties: {
+        plan: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              intent: { type: "string" },
+              tool: { type: "string" },
+              arguments: { type: "object" },
+              status: { type: "string", enum: ["ready", "conditional"] },
+              requiredParams: { type: "array", items: { type: "string" } }
+            },
+            required: ["id", "intent", "tool", "arguments", "status", "requiredParams"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["plan"],
+      additionalProperties: false
+    };
 
     try {
-      const responseStream = await this.groqClient.chat.completions.create({
+      const response = await this.groqClient.chat.completions.create({
         model: PlannerService.MODEL,
         messages: messagesForApi as any,
         max_tokens: this.maxTokens,
         temperature: 0.1,
-        response_format: { type: "json_object" },
-        stream: true,
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'action_plan_schema', schema: planSchema, strict: true },
+        } as any, // Cast to any to bypass incorrect SDK typing for json_schema
+        tool_choice: 'auto',
       });
 
-      for await (const chunk of responseStream) {
-        const contentDelta = chunk.choices[0]?.delta?.content;
-        if (contentDelta) accumulatedContent += contentDelta;
-        if (chunk.choices[0]?.finish_reason) break;
-      }
-      
-      if (!accumulatedContent) {
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
         logger.error('PlannerService: No content from planning LLM', { sessionId });
         throw new Error('No content from planning LLM');
       }
 
-      const responseObject = JSON.parse(accumulatedContent);
+      const responseObject = JSON.parse(content);
+
+      logger.info('PlannerService: Raw plan from LLM', {
+        sessionId,
+        planObject: JSON.stringify(responseObject, null, 2)
+      });
 
       if (!responseObject.plan || !Array.isArray(responseObject.plan)) {
-        logger.error('PlannerService: Invalid response format', {
+        logger.error('PlannerService: Invalid response format from structured output', {
           sessionId,
           responseObject: JSON.stringify(responseObject)
         });
-        throw new Error('Planner LLM response is not in the expected format.');
+        throw new Error('Planner LLM response is not in the expected format despite using json_schema.');
       }
 
       const actionPlan: ActionPlan = responseObject.plan.map((item: any, idx: number) => {
-        const actionId = uuidv4();
+        const actionId = item.id || uuidv4(); // Use ID from plan if available
         
         logger.info('PlannerService: Creating action step', {
           sessionId,
@@ -487,7 +512,7 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
           intent: item.intent,
           tool: item.tool,
           arguments: item.arguments || {},
-          status: 'ready' as const,
+          status: 'ready' as const, // Status is now handled by ActionLauncher
           stepNumber: idx + 1,
           totalSteps: responseObject.plan.length
         };
@@ -517,7 +542,6 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
       logger.error('PlannerService: Error generating action plan', {
         error: error.message,
         errorStack: error.stack,
-        accumulatedContent: accumulatedContent?.substring(0, 1000),
         sessionId
       });
       return [];
