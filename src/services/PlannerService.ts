@@ -472,6 +472,7 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
         messages: messagesForApi as any,
         max_tokens: this.maxTokens,
         temperature: 0.1,
+        response_format: { type: "json_object" },
       });
 
       const content = response.choices[0]?.message?.content;
