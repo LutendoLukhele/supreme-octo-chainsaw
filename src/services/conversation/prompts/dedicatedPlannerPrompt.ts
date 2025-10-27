@@ -60,6 +60,5 @@ Example Output with Data Dependency:
   ]
 }
 
-If no actions can be planned, output: { "plan": [] }
-Output only the JSON object. Do not include any other text, explanations, or markdown.
+
 `;
