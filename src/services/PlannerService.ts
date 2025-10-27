@@ -435,6 +435,11 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
       .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
       .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
 
+    logger.info('PlannerService: Constructed system prompt for planner', {
+      sessionId,
+      systemPrompt: systemPromptContent,
+    });
+
     const messagesForApi: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPromptContent }, { role: 'user', content: userInput }];
 
     const planSchema = {
@@ -467,7 +472,6 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
         messages: messagesForApi as any,
         max_tokens: this.maxTokens,
         temperature: 0.1,
-        response_format: { type: "json_object" },
       });
 
       const content = response.choices[0]?.message?.content;
