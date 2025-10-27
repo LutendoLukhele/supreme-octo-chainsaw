@@ -45,7 +45,7 @@ export class PlannerService extends EventEmitter {
   private toolConfigManager: ToolConfigManager;
 
   // Using Llama 3.3 70B - the most capable model on Groq
-  private static readonly MODEL = 'openai/gpt-oss-20b';
+  private static readonly MODEL = 'llama-3.3-70b-versatile';
 
   constructor(
     groqApiKey: string,

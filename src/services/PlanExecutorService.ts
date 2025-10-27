@@ -154,7 +154,7 @@ Instructions:
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'openai/gpt-oss-20b', // Model that supports json_schema
+        model: 'llama-3.3-70b-versatile', // Model that supports json_schema
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
