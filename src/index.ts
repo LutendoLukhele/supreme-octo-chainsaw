@@ -68,7 +68,6 @@ const resolver = new Resolver(dataDependencyService);
 const toolOrchestrator = new ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
 const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager);
 const beatEngine = new BeatEngine(toolConfigManager);
-const followUpService = new FollowUpService(groqClient, CONFIG.MODEL_NAME, 150);
 
 const conversationService = new ConversationService({
     groqApiKey: CONFIG.GROQ_API_KEY,
@@ -87,7 +86,7 @@ const actionLauncherService = new ActionLauncherService(
     beatEngine,
 );
 
-const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient);
+const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService);
 
 // --- Session State Management ---
 interface SessionState {
@@ -258,36 +257,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             await sessionState.setItem(sessionId, state);
             streamManager.sendChunk(sessionId, { type: 'run_updated', content: currentRun });
 
-            // --- NEW CONTEXT-AWARE FOLLOW-UP LOGIC ---
-            // Instead of a separate follow-up service, we now feed the tool result back into the main conversation
-            // to generate a more contextually aware response.
-            if (completedAction.status === 'completed' && currentRun.toolExecutionPlan.every(s => s.status === 'completed' || s.status === 'failed')) {
-                 logger.info('All actions complete, generating final context-aware response.', { sessionId });
-                 
-                 // 1. Add the tool results to the conversation history.
-                 const lastStep = currentRun.toolExecutionPlan.find(s => s.toolCall.id === completedAction.id);
-                 if (lastStep && lastStep.result) {
-                     conversationService.addToolResultMessageToHistory(
-                         sessionId,
-                         lastStep.toolCall.id,
-                         lastStep.toolCall.name,
-                         lastStep.result.data
-                     );
-                 }
-
-                 // 2. Call the conversation service again, but with no new user message.
-                 // This prompts the LLM to generate a response based on the tool results it now sees in the history.
-                 const finalResponseResult = await conversationService.processMessageAndAggregateResults(
-                     null, // No new user message
-                     sessionId,
-                     uuidv4()
-                 );
-
-                 // 3. Stream the final, summary response.
-                 if (finalResponseResult.conversationalResponse?.trim()) {
-                     await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);
-                 }
-            }
             return;
         }
 

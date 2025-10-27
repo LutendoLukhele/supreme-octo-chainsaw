@@ -10,6 +10,11 @@ Pre-identified Tool Calls (if any, verify and integrate these):
 Available Tools (use the exact 'name' property from this list for the 'tool' field in your plan):
 {{TOOL_DEFINITIONS_JSON}}
 
+---
+**CRITICAL RULE: TOOL SELECTION**
+- If the user's request is about "email", you MUST use a tool with "email" in its name (e.g., 'fetch_emails', 'send_email'). You MUST NOT use 'fetch_entity'.
+- If the user's request is about "Salesforce", "CRM", "deals", or "contacts", you MUST use the 'fetch_entity' tool. You MUST NOT use email tools for this.
+---
 Instructions:
 1.  Identify all distinct actions or goals implied by the user's request.
 2.  For each action:

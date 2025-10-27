@@ -6,6 +6,7 @@ import { StreamManager } from './stream/StreamManager';
 import { ToolOrchestrator } from './tool/ToolOrchestrator';
 import { Run, ToolExecutionStep } from './tool/run.types';
 import Groq from 'groq-sdk';
+import { ActionStep, PlannerService } from './PlannerService';
 
 const logger = winston.createLogger({
   level: 'info',
@@ -20,6 +21,7 @@ export class PlanExecutorService {
     private streamManager: StreamManager,
     private toolConfigManager: ToolConfigManager,
     private groqClient: Groq,
+    private plannerService: PlannerService, // Add PlannerService
   ) {}
 
   private _get(obj: any, path: string, defaultValue: any = undefined) {
@@ -35,14 +37,15 @@ export class PlanExecutorService {
     return current === undefined ? defaultValue : current;
   }
 
-  private _resolvePlaceholders(args: any, run: Run): any {
+  private _resolvePlaceholders(args: any, run: Run): { resolvedArgs: any, placeholdersResolved: boolean } {
     const resolvedArgs = JSON.parse(JSON.stringify(args)); // Deep copy
+    let placeholdersResolved = false;
 
     const replacer = (obj: any) => {
       for (const key in obj) {
         if (typeof obj[key] === 'string') {
           const originalString = obj[key];
-          const match = originalString.match(/^{{(.+?)}}$/);
+          const match = originalString.match(/^{{(.+?)}}$/);          
 
           if (match) {
             // Handle full string replacement
@@ -60,6 +63,7 @@ export class PlanExecutorService {
               const value = this._get(sourceStep.result.data, path);
               if (value !== undefined) {
                 obj[key] = value;
+                placeholdersResolved = true;
               } else {
                 logger.warn(`Could not resolve placeholder: ${originalString}. Path '${path}' not found in step ${stepId}.`, { runId: run.id });
               }
@@ -80,6 +84,7 @@ export class PlanExecutorService {
               if (sourceStep && sourceStep.result) {
                 const value = this._get(sourceStep.result.data, path);
                 if (value !== undefined) {
+                  placeholdersResolved = true;
                   return String(value);
                 } else {
                   logger.warn(`Could not resolve placeholder: ${match}. Path '${path}' not found in step ${stepId}.`, { runId: run.id });
@@ -98,7 +103,7 @@ export class PlanExecutorService {
     };
 
     replacer(resolvedArgs);
-    return resolvedArgs;
+    return { resolvedArgs, placeholdersResolved };
   }
 
   private async _fixArgumentsWithLlm(
@@ -154,7 +159,7 @@ Instructions:
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'llama-3.3-70b-versatile', // Model that supports json_schema
+        model: 'meta-llama/Llama-3-70b-chat-hf',
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
@@ -175,6 +180,64 @@ Instructions:
     }
   }
 
+  private async _resolveArgumentsWithLlm(
+    currentStep: ToolExecutionStep,
+    run: Run
+  ): Promise<Record<string, any>> {
+    const originalArgs = currentStep.toolCall.arguments;
+    const toolName = currentStep.toolCall.name;
+    const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
+
+    // Find the source step based on the first placeholder found
+    const placeholderMatch = JSON.stringify(originalArgs).match(/{{(step_\w+)\..*?}}/);
+    if (!placeholderMatch) {
+      logger.warn('LLM argument resolution called, but no placeholder found.', { stepId: currentStep.stepId });
+      return originalArgs; // Return original args if no placeholder
+    }
+
+    const sourceStepId = placeholderMatch[1];
+    const sourceStep = run.toolExecutionPlan.find(s => s.stepId === sourceStepId);
+
+    if (!sourceStep || !sourceStep.result) {
+      logger.error('LLM argument resolution: Source step or its result not found.', { sourceStepId });
+      throw new Error(`Cannot resolve arguments: Source step ${sourceStepId} or its result is missing.`);
+    }
+
+    const systemPrompt = `You are an expert data resolver for a multi-step AI agent. Your task is to take the result from a previous step and use it to accurately fill in the arguments for the next step, based on the user's original request.
+
+**User's Original Request:**
+${run.userInput}
+
+**Previous Step's Result (JSON Data):**
+${JSON.stringify(sourceStep.result.data, null, 2)}
+
+**Next Step's Tool Definition:**
+Tool Name: ${toolName}
+Tool Schema:
+${JSON.stringify(toolSchema, null, 2)}
+
+**Instructions:**
+1.  Analyze the "User's Original Request" to understand the user's intent for this step (e.g., "the newest one", "the one from Global Corp").
+2.  Examine the "Previous Step's Result" to find the specific data that matches the user's intent.
+3.  Using the extracted data, construct a valid JSON object for the arguments of the "${toolName}" tool, conforming strictly to its schema.
+4.  Output ONLY the final, corrected JSON object for the arguments. Do not include any other text, explanations, or markdown.`;
+
+    logger.info('Invoking LLM for smart argument resolution.', { stepId: currentStep.stepId, sourceStepId });
+
+    const response = await this.groqClient.chat.completions.create({
+      model: 'meta-llama/Llama-3-70b-chat-hf',
+      messages: [{ role: 'system', content: systemPrompt }],
+      max_tokens: 2048,
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) throw new Error('LLM returned no content for argument resolution.');
+
+    return JSON.parse(content);
+  }
+
   public async executePlan(run: Run, userId: string): Promise<Run> { // Ensure the method signature reflects the return
     logger.info('Starting automatic plan execution', { runId: run.id, planId: run.planId });
 
@@ -190,12 +253,43 @@ Instructions:
       }
 
       logger.info(`Executing step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
+      step.status = 'running';
+      this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
       try {
-        let resolvedArguments = this._resolvePlaceholders(step.toolCall.arguments, run);
+        let resolvedArgs = step.toolCall.arguments;
+        let placeholdersResolved = false;
+
+        // Check if arguments contain a placeholder to decide which resolution strategy to use
+        const hasPlaceholders = JSON.stringify(step.toolCall.arguments).includes('{{');
+
+        if (hasPlaceholders) {
+          logger.info('Placeholders detected, using LLM for smart argument resolution.', { stepId: step.stepId });
+          resolvedArgs = await this._resolveArgumentsWithLlm(step, run);
+          placeholdersResolved = true;
+        }
+
+        // --- This block remains to update the client with the resolved arguments ---
+        const stepIndexToUpdate = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+        if (stepIndexToUpdate !== -1) {
+            run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments = resolvedArgs;
+        }
+        
+        // Announce the step with resolved arguments before executing
+        const stepForAnnouncement: ActionStep = {
+          id: step.stepId,
+          intent: step.toolCall.name, // Using tool name as intent for announcement
+          tool: step.toolCall.name,
+          arguments: resolvedArgs,
+          status: 'executing',
+        };
+        // Pass the new flag to the announcement service
+        await this.plannerService.streamStepAnnouncement(stepForAnnouncement, run.sessionId, placeholdersResolved);
+        this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
         try {
-          this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, resolvedArguments);
+          // Validate the now-resolved arguments
+          this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, resolvedArgs);
         } catch (error: any) {
           logger.warn('Zod validation failed, attempting LLM fallback.', {
             runId: run.id,
@@ -203,11 +297,11 @@ Instructions:
             error: error.message,
           });
           
-          resolvedArguments = await this._fixArgumentsWithLlm(step.toolCall.name, resolvedArguments, error.message);
+          const fixedArguments = await this._fixArgumentsWithLlm(step.toolCall.name, resolvedArgs, error.message);
 
           // Re-validate after LLM correction
           try {
-            this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, resolvedArguments);
+            this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, fixedArguments);
             logger.info('LLM-corrected arguments passed validation.', { runId: run.id, stepId: step.stepId });
           } catch (finalError: any) {
             logger.error('Validation failed even after LLM correction. Halting step.', {
@@ -217,12 +311,14 @@ Instructions:
             });
             throw finalError; // Propagate the error to halt the plan
           }
+          // If fixed, update the arguments in the run object again
+          run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments = fixedArguments;
         }
 
         const payload = {
           actionId: step.toolCall.id,
           toolName: step.toolCall.name,
-          arguments: resolvedArguments,
+          arguments: run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments,
         };
 
         // Added for debugging data dependencies
@@ -263,14 +359,38 @@ Instructions:
         if (completedAction.status === 'failed') {
           logger.error('Step failed, halting plan execution.', { runId: run.id, stepId: step.stepId, error: completedAction.error });
           run.status = 'failed';
+          // Send a clear failure message to the client
+          this.streamManager.sendChunk(run.sessionId, {
+            type: 'error',
+            content: `Action '${step.toolCall.name}' failed: ${completedAction.error || 'An unknown error occurred.'}`,
+            messageId: step.toolCall.id,
+            isFinal: true,
+          });
           this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
           return run;
+        } else {
+          // Announce step completion
+          const stepForCompletion: ActionStep = {
+            id: step.stepId,
+            intent: step.toolCall.name, // Using tool name as intent for announcement
+            tool: step.toolCall.name,
+            arguments: step.toolCall.arguments, // Use the original arguments or resolved ones if needed
+            status: 'completed',
+          };
+          await this.plannerService.streamStepCompletion(stepForCompletion, completedAction.result, run.sessionId);
         }
       } catch (error: any) {
         logger.error('An unexpected error occurred during step execution, halting plan.', {
           runId: run.id,
           stepId: step.stepId,
           error: error.message,
+        });
+        // Send a clear failure message to the client
+        this.streamManager.sendChunk(run.sessionId, {
+            type: 'error',
+            content: `Execution of '${step.toolCall.name}' failed: ${error.message || 'An unexpected error occurred.'}`,
+            messageId: step.toolCall.id,
+            isFinal: true,
         });
         run.status = 'failed';
         this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });

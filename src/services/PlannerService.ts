@@ -45,7 +45,7 @@ export class PlannerService extends EventEmitter {
   private toolConfigManager: ToolConfigManager;
 
   // Using Llama 3.3 70B - the most capable model on Groq
-  private static readonly MODEL = 'llama-3.3-70b-versatile';
+  private static readonly MODEL = 'meta-llama/Llama-3-70b-chat-hf';
 
   constructor(
     groqApiKey: string,
@@ -171,16 +171,22 @@ Be specific but concise. Example: "I'll fetch your recent emails and then create
 
   async streamStepAnnouncement(
     step: ActionStep,
-    sessionId: string
-  ): Promise<StreamChunk> {
+    sessionId: string,
+    placeholdersResolved: boolean = false // New parameter to indicate if placeholders were resolved
+  ): Promise<void> { // Changed return type to void as it's primarily streaming
     const stepMessageId = uuidv4();
     const totalSteps = step.totalSteps ?? 1;
     const stepPrefix = totalSteps > 1
       ? `Step ${step.stepNumber} of ${totalSteps}: `
       : '';
+    
+    const dataResolutionMessage = placeholdersResolved
+      ? `I've used the results from the previous step to prepare the arguments. `
+      : '';
 
     const announcementPrompt = `Generate a brief, specific action announcement (max 25 words).
 ${stepPrefix}Executing: ${step.tool}
+${dataResolutionMessage}
 Intent: ${step.intent}
 Key parameters: ${JSON.stringify(step.arguments, null, 2).slice(0, 200)}
 
@@ -230,16 +236,6 @@ Be specific about what's being done.`;
       const fallbackText = `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`;
       this.streamSimpleMessage(sessionId, stepMessageId, fallbackText, MessageType.STEP_ANNOUNCEMENT);
     }
-
-    const plannerStatus: PlannerStatusChunk = {
-      type: 'planner_status',
-      content: `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`,
-      messageId: stepMessageId,
-      streamType: 'planner_feedback',
-      isFinal: true,
-    };
-
-    return plannerStatus as StreamChunk;
   }
 
   async streamStepCompletion(
@@ -297,6 +293,8 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
       this.streamSimpleMessage(sessionId, completionMessageId, fallbackText, MessageType.STEP_COMPLETE);
     }
   }
+
+ 
 
   async streamSingleActionAnnouncement(
     step: ActionStep,
