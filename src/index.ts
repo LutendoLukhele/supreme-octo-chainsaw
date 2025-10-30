@@ -89,6 +89,49 @@ const actionLauncherService = new ActionLauncherService(
 
 const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService);
 
+// ===== DEBUG: Verify tool configuration =====
+logger.info('=== TOOL CONFIGURATION DEBUG ===');
+try {
+    const allToolsForPlanner = toolConfigManager.getToolDefinitionsForPlanner();
+    logger.info('Tools registered for planner:', {
+        totalCount: allToolsForPlanner.length,
+        tools: allToolsForPlanner.map(t => ({
+            name: t.name,
+            category: t.category,
+            hasParams: !!t.parameters
+        }))
+    });
+
+    // Check specific categories
+    const categories = ['Email', 'CRM', 'Calendar'];
+    categories.forEach(cat => {
+        const tools = toolConfigManager.getToolsByCategories([cat]);
+        logger.info(`Tools in ${cat} category:`, {
+            count: tools.length,
+            names: tools.map(t => t.name)
+        });
+    });
+
+    // Verify critical tools exist
+    const criticalTools = ['fetch_emails', 'send_email', 'fetch_entity', 'create_entity', 'update_entity'];
+    const missingTools = criticalTools.filter(name => 
+        !allToolsForPlanner.some(t => t.name === name)
+    );
+    
+    if (missingTools.length > 0) {
+        logger.error('❌ CRITICAL: Missing required tools!', { 
+            missingTools,
+            availableTools: allToolsForPlanner.map(t => t.name)
+        });
+    } else {
+        logger.info('✅ All critical tools are registered');
+    }
+} catch (err: any) {
+    logger.error('Failed to debug tool configuration', { error: err.message });
+}
+logger.info('=== END TOOL CONFIGURATION DEBUG ===');
+// ===== END DEBUG =====
+
 // --- Session State Management ---
 interface SessionState {
     userId: string;
@@ -407,8 +450,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
             const processedResult = await conversationService.processMessageAndAggregateResults(
                 data.content,
-                sessionId, // Corrected: Pass only required args
+                sessionId,
                 messageId
+                // userId removed - not a parameter of this method
             );
 
             const { aggregatedToolCalls, conversationalResponse } = processedResult;
@@ -431,7 +475,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
 
                 const toolsForPlanning = aggregatedToolCalls.filter(t => t.name !== 'planParallelActions');
-                const actionPlan: ActionPlan = await plannerService.generatePlanWithStepAnnouncements(data.content, toolsForPlanning, sessionId, messageId);
+                // CRITICAL FIX: Pass the full user message to the planner so it can see ALL relevant context
+                // The planner's internal prompt will handle tool selection based on the full request
+                const actionPlan: ActionPlan = await plannerService.generatePlanWithStepAnnouncements(
+                  data.content,  // Full user message
+                  toolsForPlanning,
+                  sessionId, 
+                  messageId
+                );
 
                 if (actionPlan && actionPlan.length > 0) {
                     await actionLauncherService.processActionPlan(actionPlan, sessionId, userId, messageId, toolOrchestrator, run);
