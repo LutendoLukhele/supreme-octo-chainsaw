@@ -23,7 +23,7 @@ export class PlanExecutorService {
     private toolConfigManager: ToolConfigManager,
     private groqClient: Groq,
     private plannerService: PlannerService, // Add PlannerService
-    private followUpService: FollowUpService,
+    private followUpService: FollowUpService
   ) {}
 
   private _get(obj: any, path: string, defaultValue: any = undefined) {
@@ -157,7 +157,7 @@ Instructions:
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'meta-llama/Llama-3-70b-chat-hf', // A more capable model for reasoning
+        model: 'llama-3.3-70b-versatilef', // A more capable model for reasoning
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
@@ -179,64 +179,6 @@ Instructions:
     }
   }
 
-  private async _resolveArgumentsWithLlm(
-    currentStep: ToolExecutionStep,
-    run: Run
-  ): Promise<Record<string, any>> {
-    const originalArgs = currentStep.toolCall.arguments;
-    const toolName = currentStep.toolCall.name;
-    const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
-
-    // Find the source step based on the first placeholder found
-    const placeholderMatch = JSON.stringify(originalArgs).match(/{{(step_\w+)\..*?}}/);
-    if (!placeholderMatch) {
-      logger.warn('LLM argument resolution called, but no placeholder found.', { stepId: currentStep.stepId });
-      return originalArgs; // Return original args if no placeholder
-    }
-
-    const sourceStepId = placeholderMatch[1];
-    const sourceStep = run.toolExecutionPlan.find(s => s.stepId === sourceStepId);
-
-    if (!sourceStep || !sourceStep.result) {
-      logger.error('LLM argument resolution: Source step or its result not found.', { sourceStepId });
-      throw new Error(`Cannot resolve arguments: Source step ${sourceStepId} or its result is missing.`);
-    }
-
-    const systemPrompt = `You are an expert data resolver for a multi-step AI agent. Your task is to take the result from a previous step and use it to accurately fill in the arguments for the next step, based on the user's original request.
-
-**User's Original Request:**
-${run.userInput}
-
-**Previous Step's Result (JSON Data):**
-${JSON.stringify(sourceStep.result.data, null, 2)}
-
-**Next Step's Tool Definition:**
-Tool Name: ${toolName}
-Tool Schema:
-${JSON.stringify(toolSchema, null, 2)}
-
-**Instructions:**
-1.  Analyze the "User's Original Request" to understand the user's intent for this step (e.g., "the newest one", "the one from Global Corp").
-2.  Examine the "Previous Step's Result" to find the specific data that matches the user's intent.
-3.  Using the extracted data, construct a valid JSON object for the arguments of the "${toolName}" tool, conforming strictly to its schema.
-4.  Output ONLY the final, corrected JSON object for the arguments. Do not include any other text, explanations, or markdown.`;
-
-    logger.info('Invoking LLM for smart argument resolution.', { stepId: currentStep.stepId, sourceStepId });
-
-    const response = await this.groqClient.chat.completions.create({
-      model: 'meta-llama/Llama-3-70b-chat-hf',
-      messages: [{ role: 'system', content: systemPrompt }],
-      max_tokens: 2048,
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error('LLM returned no content for argument resolution.');
-
-    return JSON.parse(content);
-  }
-
   public async executePlan(run: Run, userId: string): Promise<Run> { // Ensure the method signature reflects the return
     logger.info('Starting automatic plan execution', { runId: run.id, planId: run.planId });
 
@@ -256,21 +198,11 @@ ${JSON.stringify(toolSchema, null, 2)}
       this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
       try {
-        let resolvedArgs: Record<string, any>;
-        let placeholdersResolved = false;
-        const currentStepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
-
-        // --- FIX: Use LLM for argument resolution on dependent steps ---
-        if (currentStepIndex > 0) {
-            logger.info('Dependent step found. Using LLM for smart argument resolution.', { stepId: step.stepId });
-            resolvedArgs = await this._resolveArgumentsWithLlm(step, run);
-            placeholdersResolved = true; // The LLM inherently resolves the data dependencies
-        } else {
-            // For the first step, use simple placeholder replacement (if any)
-            ({ resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run));
-        }
-
-        // Update the step's arguments with the resolved values for this execution
+        // The FollowUpService now handles argument resolution between steps.
+        // For the first step, we use the arguments directly from the plan.
+        // For subsequent steps, the arguments will have been pre-resolved by the FollowUpService
+        // in the previous iteration of this loop.
+        const { resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run);
         step.toolCall.arguments = resolvedArgs;
         
         // --- This block remains to update the client with the resolved arguments ---

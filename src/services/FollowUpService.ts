@@ -6,6 +6,7 @@ import { FOLLOW_UP_PROMPT_TEMPLATE } from './followUpPrompt';
 import { ToolCall } from './tool/tool.types';
 import { Run, ToolExecutionStep } from './tool/run.types';
 import { ActiveAction } from '../action-launcher.service';
+import { ToolConfigManager } from './tool/ToolConfigManager';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -20,6 +21,7 @@ export class FollowUpService {
         private model: string,
         private maxTokens: number
     ) {}
+  toolConfigManager = new ToolConfigManager();
 
     /**
      * Analyzes the result of a completed action to generate a conversational summary
@@ -37,18 +39,17 @@ export class FollowUpService {
 
     const toolResultJson = JSON.stringify(lastCompletedStep.result.data, null, 2);
     const nextToolName = nextStep.toolCall.name;
-    // Assuming ToolConfigManager is available or we can get the schema from the step
-    // For this example, we'll pass a simplified schema. A real implementation would fetch this.
-    const nextToolParams = JSON.stringify(nextStep.toolCall.arguments, null, 2); // Placeholder for actual schema
+    const nextToolSchema = this.toolConfigManager.getToolInputSchema(nextToolName);
+    const nextToolDescription = this.toolConfigManager.getToolDefinition(nextToolName)?.description || 'No description available.';
 
     // 2. Construct a prompt for the LLM.
     const prompt = FOLLOW_UP_PROMPT_TEMPLATE
     .replace('{{USER_INITIAL_QUERY}}', run.userInput)
     .replace('{{PREVIOUS_TOOL_RESULT_JSON}}', toolResultJson)
-    // For now, we are only generating a summary, so we provide dummy data for the next tool.
-    .replace('{{NEXT_TOOL_NAME}}', "n/a")
-    .replace('{{NEXT_TOOL_DESCRIPTION}}', "Not applicable for this step.")
-    .replace('{{NEXT_TOOL_PARAMETERS_JSON}}', "{}");
+      // Provide the full context for the next tool
+      .replace('{{NEXT_TOOL_NAME}}', nextToolName)
+      .replace('{{NEXT_TOOL_DESCRIPTION}}', nextToolDescription)
+      .replace('{{NEXT_TOOL_PARAMETERS_JSON}}', JSON.stringify(nextToolSchema, null, 2));
 
     // 3. Call the LLM to generate the conversational response.
     try {

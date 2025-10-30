@@ -1,4 +1,4 @@
-// src/services/prompts/followUpPrompt.ts
+// src/services/followUpPrompt.ts
 
 export const FOLLOW_UP_PROMPT_TEMPLATE = `
 You are a specialized AI assistant that acts as a bridge between steps in a multi-step plan. Your task is to analyze the result of a completed tool, generate a brief, conversational summary for the user, and then prepare the arguments for the next tool in the plan.
