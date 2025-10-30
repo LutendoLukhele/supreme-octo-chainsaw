@@ -113,29 +113,38 @@ export class ConversationService extends EventEmitter {
             history.push({ role: 'user', content: userMessage });
             this.conversationHistory.set(sessionId, history);
         }
+        
+        const isSummaryMode = !userMessage;
+        let toolsForStream: any[] = [];
+        let initialUserQuery = '';
 
-        const relevantCategories = getRelevantToolCategories(userMessage || history.at(-1)?.content || '');
-        const filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
-        const filteredGroqTools = filteredToolConfigs.map(tool => {
-            const inputSchema = this.toolConfigManager.getToolInputSchema(tool.name);
-            if (!inputSchema) {
-                logger.warn(`Skipping Groq definition for ${tool.name}: No input schema found.`);
-                return null;
-            }
-            return {
-                type: "function" as const,
-                function: { name: tool.name, description: tool.description, parameters: inputSchema }
-            };
-        }).filter(Boolean);
+        if (!isSummaryMode) {
+            const relevantCategories = getRelevantToolCategories(userMessage || history.at(-1)?.content || '');
+            const filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
+            const groqTools = filteredToolConfigs.map(tool => {
+                const inputSchema = this.toolConfigManager.getToolInputSchema(tool.name);
+                if (!inputSchema) {
+                    logger.warn(`Skipping Groq definition for ${tool.name}: No input schema found.`);
+                    return null;
+                }
+                return {
+                    type: "function" as const,
+                    function: { name: tool.name, description: tool.description, parameters: inputSchema }
+                };
+            }).filter(Boolean);
+            toolsForStream = [...(groqTools as any[]), PLANNER_META_TOOL];
+            initialUserQuery = history.find(m => m.role === 'user')?.content || userMessage || '';
+        } else {
+            initialUserQuery = history.find(m => m.role === 'user')?.content || 'the previous actions';
+        }
 
-        const initialUserQuery = history.find(m => m.role === 'user')?.content || userMessage || '';
         const aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'] = [];
 
         let conversationalResponseText = "";
         
         const conversationalStreamPromise = this.runConversationalStream(
-            userMessage, initialUserQuery, sessionId, currentMessageId,
-            messageProcessingId, filteredGroqTools as any, history, aggregatedToolCallsOutput
+            userMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId,
+            toolsForStream, history, aggregatedToolCallsOutput
         ).then(result => {
             conversationalResponseText = result.text;
         });
@@ -202,9 +211,11 @@ export class ConversationService extends EventEmitter {
                 .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '');
 
             const messagesForApi: Message[] = [
-                { role: 'system', content: systemPromptContent },
-                ...this.prepareHistoryForLLM(historyForThisStream)
+                { role: 'system', content: systemPromptContent }
             ];
+            messagesForApi.push(
+              ...this.prepareHistoryForLLM(historyForThisStream)
+            );
 
             // Always provide the tools. The prompt guides the LLM on when to use them.
             const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
@@ -214,7 +225,7 @@ export class ConversationService extends EventEmitter {
                 model: this.model,
                 messages: messagesForApi as any,
                 max_tokens: this.maxTokens,
-                tools: finalToolsForStream, // This will be undefined in summary mode, preventing tool calls
+                tools: toolsForThisStream.length > 0 ? toolsForThisStream : undefined,
                 tool_choice: "auto", // FIX: Explicitly allow the LLM to choose a tool
                 stream: true,
                 temperature: 0.5,

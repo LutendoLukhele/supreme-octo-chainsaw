@@ -393,159 +393,162 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
     return friendlyNames[toolName] || toolName.replace(/_/g, ' ');
   }
 
-  public async generatePlan(
-    userInput: string,
-    identifiedToolCalls: { name: string; arguments: Record<string, any>; id?: string }[],
-    sessionId: string,
-    clientMessageId: string
-  ): Promise<ActionPlan> {
-    logger.info('PlannerService: Generating action plan using structured output', {
-      sessionId,
-      userInputLength: userInput.length,
-      numIdentifiedTools: identifiedToolCalls.length,
-      identifiedToolNames: identifiedToolCalls.map(tc => tc.name)
+  // Add this method to PlannerService class to validate tool names
+
+public async generatePlan(
+  userInput: string,
+  identifiedToolCalls: { name: string; arguments: Record<string, any>; id?: string }[],
+  sessionId: string,
+  clientMessageId: string
+): Promise<ActionPlan> {
+  logger.info('PlannerService: Generating action plan using structured output', {
+    sessionId,
+    userInputLength: userInput.length,
+    numIdentifiedTools: identifiedToolCalls.length,
+    identifiedToolNames: identifiedToolCalls.map(tc => tc.name)
+  });
+
+  const plannerStatus: PlannerStatusChunk = {
+    type: 'planner_status',
+    content: 'Analyzing your request...',
+    messageId: clientMessageId,
+    streamType: 'planner_feedback',
+    isFinal: true,
+  };
+
+  this.emit('send_chunk', sessionId, plannerStatus as StreamChunk);
+
+  const availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
+  const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
+
+  let identifiedToolsPromptSection = "No tools pre-identified.";
+  if (identifiedToolCalls.length > 0) {
+    identifiedToolsPromptSection = "The following tool calls were preliminarily identified:\n";
+    identifiedToolCalls.forEach(tc => {
+      identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
     });
-
-    const plannerStatus: PlannerStatusChunk = {
-      type: 'planner_status',
-      content: 'Analyzing your request...',
-      messageId: clientMessageId,
-      streamType: 'planner_feedback',
-      isFinal: true,
-    };
-
-    this.emit('send_chunk', sessionId, plannerStatus as StreamChunk);
-
-    const availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
-    const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
-
-    let identifiedToolsPromptSection = "No tools pre-identified.";
-    if (identifiedToolCalls.length > 0) {
-      identifiedToolsPromptSection = "The following tool calls were preliminarily identified:\n";
-      identifiedToolCalls.forEach(tc => {
-        identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
-      });
-    }
-
-    const systemPromptContent = DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE
-      .replace('{{USER_CURRENT_MESSAGE}}', userInput)
-      .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
-      .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
-    // Add a strict rule to prevent hallucination
-    // .concat("\n\nIMPORTANT: You MUST ONLY use tools from the 'Available Tools' list provided. Do not invent or assume any other tools.");
-
-
-    logger.info('PlannerService: Constructed system prompt for planner', {
-      sessionId,
-      systemPrompt: systemPromptContent,
-    });
-
-    const messagesForApi: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPromptContent }, { role: 'user', content: userInput }];
-
-    const planSchema = {
-      type: "object",
-      properties: {
-        plan: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              intent: { type: "string" },
-              tool: { type: "string" },
-              arguments: { type: "object" },
-              status: { type: "string", enum: ["ready", "conditional"] },
-              requiredParams: { type: "array", items: { type: "string" } }
-            },
-            required: ["id", "intent", "tool", "arguments", "status", "requiredParams"],
-            additionalProperties: false
-          }
-        }
-      },
-      required: ["plan"],
-      additionalProperties: false
-    };
-
-    try {
-      const response = await this.groqClient.chat.completions.create({
-        model: PlannerService.MODEL,
-        messages: messagesForApi as any,
-        max_tokens: this.maxTokens,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-      });
-
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        logger.error('PlannerService: No content from planning LLM', { sessionId });
-        throw new Error('No content from planning LLM');
-      }
-
-      const responseObject = JSON.parse(content);
-
-      logger.info('PlannerService: Raw plan from LLM', {
-        sessionId,
-        planObject: JSON.stringify(responseObject, null, 2)
-      });
-
-      if (!responseObject.plan || !Array.isArray(responseObject.plan)) {
-        logger.error('PlannerService: Invalid response format from structured output', {
-          sessionId,
-          responseObject: JSON.stringify(responseObject)
-        });
-        throw new Error('Planner LLM response is not in the expected format despite using json_schema.');
-      }
-
-      const actionPlan: ActionPlan = responseObject.plan.map((item: any, idx: number) => {
-        const actionId = item.id || uuidv4(); // Use ID from plan if available
-        
-        logger.info('PlannerService: Creating action step', {
-          sessionId,
-          stepNumber: idx + 1,
-          actionId,
-          tool: item.tool,
-          intent: item.intent,
-          arguments: item.arguments
-        });
-        
-        return {
-          id: actionId,
-          intent: item.intent,
-          tool: item.tool,
-          arguments: item.arguments || {},
-          status: 'ready' as const, // Status is now handled by ActionLauncher
-          stepNumber: idx + 1,
-          totalSteps: responseObject.plan.length
-        };
-      });
-
-      logger.info('PlannerService: Complete plan with all IDs', {
-        sessionId,
-        planLength: actionPlan.length,
-        actionIds: actionPlan.map(step => ({ id: step.id, tool: step.tool })),
-        fullPlan: JSON.stringify(actionPlan, null, 2)
-      });
-
-      this.emit('send_chunk', sessionId, {
-        type: 'plan_generated',
-        messageId: clientMessageId,
-        content: {
-          summary: `Plan contains ${actionPlan.length} actions.`,
-          steps: actionPlan
-        },
-        streamType: 'planner_feedback',
-        isFinal: true
-      } as unknown as StreamChunk);
-
-      return actionPlan;
-
-    } catch (error: any) {
-      logger.error('PlannerService: Error generating action plan', {
-        error: error.message,
-        errorStack: error.stack,
-        sessionId
-      });
-      return [];
-    }
   }
+
+  const systemPromptContent = DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE
+    .replace('{{USER_CURRENT_MESSAGE}}', userInput)
+    .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
+    .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+
+  logger.info('PlannerService: Constructed system prompt for planner', {
+    sessionId,
+    availableToolNames: availableTools.map(t => t.name),
+  });
+
+  const messagesForApi: ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPromptContent }, 
+    { role: 'user', content: userInput }
+  ];
+
+  try {
+    const response = await this.groqClient.chat.completions.create({
+      model: PlannerService.MODEL,
+      messages: messagesForApi as any,
+      max_tokens: this.maxTokens,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      logger.error('PlannerService: No content from planning LLM', { sessionId });
+      throw new Error('No content from planning LLM');
+    }
+
+    const responseObject = JSON.parse(content);
+
+    logger.info('PlannerService: Raw plan from LLM', {
+      sessionId,
+      planObject: JSON.stringify(responseObject, null, 2)
+    });
+
+    if (!responseObject.plan || !Array.isArray(responseObject.plan)) {
+      logger.error('PlannerService: Invalid response format from structured output', {
+        sessionId,
+        responseObject: JSON.stringify(responseObject)
+      });
+      throw new Error('Planner LLM response is not in the expected format despite using json_schema.');
+    }
+
+    // CRITICAL FIX: Validate that all tools in the plan actually exist
+    const availableToolNames = new Set(availableTools.map(t => t.name));
+    const invalidTools: string[] = [];
+    
+    responseObject.plan.forEach((item: any, idx: number) => {
+      if (!availableToolNames.has(item.tool)) {
+        invalidTools.push(item.tool);
+        logger.error('PlannerService: Invalid tool in plan', {
+          sessionId,
+          stepNumber: idx + 1,
+          invalidTool: item.tool,
+          availableTools: Array.from(availableToolNames)
+        });
+      }
+    });
+
+    if (invalidTools.length > 0) {
+      const errorMsg = `Plan contains invalid tools: ${invalidTools.join(', ')}. Available tools: ${Array.from(availableToolNames).join(', ')}`;
+      logger.error('PlannerService: Plan validation failed', {
+        sessionId,
+        invalidTools,
+        availableTools: Array.from(availableToolNames)
+      });
+      throw new Error(errorMsg);
+    }
+
+    const actionPlan: ActionPlan = responseObject.plan.map((item: any, idx: number) => {
+      const actionId = item.id || uuidv4();
+      
+      logger.info('PlannerService: Creating action step', {
+        sessionId,
+        stepNumber: idx + 1,
+        actionId,
+        tool: item.tool,
+        intent: item.intent,
+        arguments: item.arguments
+      });
+      
+      return {
+        id: actionId,
+        intent: item.intent,
+        tool: item.tool,
+        arguments: item.arguments || {},
+        status: 'ready' as const,
+        stepNumber: idx + 1,
+        totalSteps: responseObject.plan.length
+      };
+    });
+
+    logger.info('PlannerService: Complete plan with validated tools', {
+      sessionId,
+      planLength: actionPlan.length,
+      actionIds: actionPlan.map(step => ({ id: step.id, tool: step.tool })),
+    });
+
+    this.emit('send_chunk', sessionId, {
+      type: 'plan_generated',
+      messageId: clientMessageId,
+      content: {
+        summary: `Plan contains ${actionPlan.length} actions.`,
+        steps: actionPlan
+      },
+      streamType: 'planner_feedback',
+      isFinal: true
+    } as unknown as StreamChunk);
+
+    return actionPlan;
+
+  } catch (error: any) {
+    logger.error('PlannerService: Error generating action plan', {
+      error: error.message,
+      errorStack: error.stack,
+      sessionId
+    });
+    return [];
+  }
+}
 } 
