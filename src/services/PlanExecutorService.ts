@@ -107,62 +107,59 @@ export class PlanExecutorService {
   }
 
   private async _fixArgumentsWithLlm(
-    toolName: string,
+    currentStep: ToolExecutionStep,
+    run: Run,
     invalidArgs: Record<string, any>,
     validationError: string
   ): Promise<Record<string, any>> {
-    logger.info('Attempting to fix arguments with LLM using structured output', { toolName, validationError });
+    const toolName = currentStep.toolCall.name;
+    logger.info('Attempting to fix arguments with LLM using previous step context.', { toolName, validationError });
     const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
     if (!toolSchema) {
       throw new Error(`Cannot fix arguments: No schema found for tool ${toolName}`);
     }
 
-    // The schema for a tool's arguments might not have all properties as required.
-    // The structured output feature requires all properties in the provided schema to be required.
-    // We create a deep copy and modify it to enforce this constraint for the LLM call.
-    const strictToolSchema = JSON.parse(JSON.stringify(toolSchema));
-    if (strictToolSchema.properties) {
-        strictToolSchema.required = Object.keys(strictToolSchema.properties);
-        // Also ensure all nested objects are strict
-        const makeStrict = (schema: any) => {
-            if (schema.properties) {
-                schema.required = Object.keys(schema.properties);
-                schema.additionalProperties = false;
-                for (const key in schema.properties) {
-                    if (schema.properties[key].type === 'object') {
-                        makeStrict(schema.properties[key]);
-                    } else if (schema.properties[key].type === 'array' && schema.properties[key].items?.type === 'object') {
-                        makeStrict(schema.properties[key].items);
-                    }
-                }
-            }
-        };
-        makeStrict(strictToolSchema);
+    // Find the previous step to provide its result as context
+    const currentStepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === currentStep.stepId);
+    const previousStep = currentStepIndex > 0 ? run.toolExecutionPlan[currentStepIndex - 1] : null;
+
+    let previousStepResultJson = "No previous step result available. You must infer missing arguments from the user's original request.";
+    if (previousStep && previousStep.status === 'completed' && previousStep.result) {
+        previousStepResultJson = JSON.stringify(previousStep.result.data, null, 2);
     }
 
-    const systemPrompt = `You are an expert at correcting tool arguments. A tool call failed due to a validation error. Your task is to correct the provided arguments to match the tool's JSON schema.
+    const systemPrompt = `You are an expert AI agent data resolver. A tool call is about to fail because its arguments are invalid or missing required data. Your task is to fix them.
+
+**User's Original Request:**
+${run.userInput}
 
 Tool Name: ${toolName}
 Tool Schema:
 ${JSON.stringify(toolSchema, null, 2)}
 
-Invalid Arguments:
+**Previous Step's Result (JSON Data):**
+${previousStepResultJson}
+
+**Current Invalid Arguments:**
 ${JSON.stringify(invalidArgs, null, 2)}
 
-Validation Error:
+**Validation Error Message:**
 ${validationError}
 
 Instructions:
-1. Analyze the validation error and the schema.
-2. Correct the invalid arguments to conform to the schema.
-3. Output ONLY the corrected JSON object for the arguments. Do not include any other text, explanations, or markdown.`;
+1.  **Analyze the Goal**: Understand the user's original request.
+2.  **Analyze the Error**: The "Validation Error" tells you exactly what's wrong (e.g., 'to' is required, 'id' must be a number).
+3.  **Find the Missing Data**: Look at the "Previous Step's Result". This JSON contains the data needed to fix the error. For example, if the 'to' address is missing for 'send_email', find the sender's email address from the 'fetch_emails' result.
+4.  **Construct the Final Arguments**: Create a complete, valid JSON object for the arguments. Combine the valid arguments from "Current Invalid Arguments" with the missing data you found.
+5.  **Output ONLY the corrected JSON object.** Do not include any other text, explanations, or markdown. Your entire response must be the valid JSON.`;
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'meta-llama/Llama-3-70b-chat-hf',
+        model: 'meta-llama/Llama-3-70b-chat-hf', // A more capable model for reasoning
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
+        response_format: { type: 'json_object' },
       });
 
       const content = response.choices[0]?.message?.content;
@@ -257,18 +254,13 @@ ${JSON.stringify(toolSchema, null, 2)}
       this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
       try {
-        let resolvedArgs = step.toolCall.arguments;
-        let placeholdersResolved = false;
+        // --- FIX: Always resolve placeholders before validation and execution ---
+        const { resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run);
 
-        // Check if arguments contain a placeholder to decide which resolution strategy to use
-        const hasPlaceholders = JSON.stringify(step.toolCall.arguments).includes('{{');
-
-        if (hasPlaceholders) {
-          logger.info('Placeholders detected, using LLM for smart argument resolution.', { stepId: step.stepId });
-          resolvedArgs = await this._resolveArgumentsWithLlm(step, run);
-          placeholdersResolved = true;
-        }
-
+        // Update the step's arguments with the resolved values for this execution
+        step.toolCall.arguments = resolvedArgs;
+        // --- END OF FIX ---
+        
         // --- This block remains to update the client with the resolved arguments ---
         const stepIndexToUpdate = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
         if (stepIndexToUpdate !== -1) {
@@ -297,7 +289,7 @@ ${JSON.stringify(toolSchema, null, 2)}
             error: error.message,
           });
           
-          const fixedArguments = await this._fixArgumentsWithLlm(step.toolCall.name, resolvedArgs, error.message);
+          const fixedArguments = await this._fixArgumentsWithLlm(step, run, resolvedArgs, error.message);
 
           // Re-validate after LLM correction
           try {
