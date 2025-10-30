@@ -49,7 +49,7 @@ export class ToolConfigManager {
   }
 
   private loadToolConfigs(configPath?: string): void {
-    const defaultPath = path.join(process.cwd(), 'src', 'config', 'tool-config.json');
+    const defaultPath = path.join(process.cwd(), 'config', 'tool-config.json');
     const finalPath = configPath || defaultPath;
 
     try {
