@@ -215,6 +215,7 @@ export class ConversationService extends EventEmitter {
                 messages: messagesForApi as any,
                 max_tokens: this.maxTokens,
                 tools: finalToolsForStream, // This will be undefined in summary mode, preventing tool calls
+                tool_choice: "auto", // FIX: Explicitly allow the LLM to choose a tool
                 stream: true,
                 temperature: 0.5,
             });
