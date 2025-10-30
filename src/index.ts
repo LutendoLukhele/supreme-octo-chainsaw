@@ -213,27 +213,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 messageId: actionId,
             });
 
-            // --- FIX: Integrate manual execution with the main PlanExecutorService flow ---
             // 1. Execute just the single action that was confirmed.
             const completedAction = await actionLauncherService.executeAction(
                 sessionId,
                 userId,
                 actionPayload,
                 toolOrchestrator,
-                currentRun.planId,
-                step.stepId
+                currentRun.planId, // Pass planId
+                step.stepId         // Pass stepId
             );
 
             // 2. Find and update the specific step in the run object with the result.
             const stepIndex = currentRun.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
             if (stepIndex !== -1) {
                 currentRun.toolExecutionPlan[stepIndex].status = completedAction.status;
-                currentRun.toolExecutionPlan[stepIndex].result = {
-                    status: completedAction.status === 'completed' ? 'success' : 'failed',
-                    toolName: completedAction.toolName,
-                    data: completedAction.result,
-                    error: completedAction.error,
-                };
+                currentRun.toolExecutionPlan[stepIndex].result = { status: completedAction.status === 'completed' ? 'success' : 'failed', toolName: completedAction.toolName, data: completedAction.result, error: completedAction.error };
                 currentRun.toolExecutionPlan[stepIndex].finishedAt = new Date().toISOString();
             }
 
@@ -244,8 +238,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // 4. Save the final state of the run after the entire plan is complete.
             state.activeRun = completedRun;
             await sessionState.setItem(sessionId, state);
-            // The "UNIFIED FINAL RESPONSE LOGIC" will now execute correctly.
-            // --- END OF FIX ---
+            // The UNIFIED FINAL RESPONSE LOGIC at the end of the 'content' handler will now be triggered
+            // by the next client message, or we can invoke it here if immediate response is needed.
+            // For now, we let the main loop handle it to keep logic centralized.
         }
 
         // --- UPDATE ACTIVE CONNECTION ---

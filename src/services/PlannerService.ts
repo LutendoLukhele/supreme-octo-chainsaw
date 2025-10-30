@@ -431,6 +431,9 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
       .replace('{{USER_CURRENT_MESSAGE}}', userInput)
       .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
       .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+      // Add a strict rule to prevent hallucination
+      // .concat("\n\nIMPORTANT: You MUST ONLY use tools from the 'Available Tools' list provided. Do not invent or assume any other tools.");
+
 
     logger.info('PlannerService: Constructed system prompt for planner', {
       sessionId,
