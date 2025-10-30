@@ -157,7 +157,7 @@ Instructions:
 
     try {
       const response = await this.groqClient.chat.completions.create({
-        model: 'llama-3.3-70b-versatilef', // A more capable model for reasoning
+        model: 'llama-3.3-70b-versatile', // A more capable model for reasoning
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,

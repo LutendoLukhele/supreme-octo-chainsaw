@@ -459,10 +459,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
                     if (!needsUserInput && actions.length > 0) {
                         logger.info('No user input needed for plan, starting auto-execution.', { sessionId, runId: run.id });
-                        await planExecutorService.executePlan(run, userId);
+                        // --- FIX: Capture the completed run object and update session state ---
+                        const completedRun = await planExecutorService.executePlan(run, userId);
+                        state.activeRun = completedRun;
+                        await sessionState.setItem(sessionId, state);
                         
                         // After auto-execution, generate a final summary response.
-                        if (run.status === 'completed') {
+                        if (completedRun.status === 'completed') {
                             logger.info('Plan auto-execution complete, generating final response.', { sessionId });
                             
                             // Add all tool results to history
@@ -613,10 +616,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 if (!needsUserInput && actions.length > 0) {
                     logger.info('No user input needed for single action, starting auto-execution.', { sessionId, runId: run.id });
                     // Capture the updated run object returned by the executor
-                    const completedRun = await planExecutorService.executePlan(run, userId);
-                    // Update the session state with the final, completed run object
-                    state.activeRun = completedRun;
+                    // --- FIX: Capture the completed run object and update session state ---
+                    const completedRunAfterExec = await planExecutorService.executePlan(run, userId);
+                    state.activeRun = completedRunAfterExec;
                     await sessionState.setItem(sessionId, state);
+                    // --- END OF FIX ---
+
                 } else if (actions.length > 0) {
                     logger.info('Single action requires user input before execution.', { sessionId });
                     // The 'parameter_collection_required' event is fired by ActionLauncherService,
