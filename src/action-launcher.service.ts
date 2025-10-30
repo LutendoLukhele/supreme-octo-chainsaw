@@ -55,7 +55,6 @@ export class ActionLauncherService extends EventEmitter {
 
     const clientActionsToConfirm: ActiveAction[] = [];
     const clientActionsNeedingParams: ActiveAction[] = [];
-    const autoExecutionPromises: Promise<ActiveAction>[] = [];
 
     for (const planItem of actionPlan) {
       const toolName = planItem.tool;
@@ -108,23 +107,8 @@ export class ActionLauncherService extends EventEmitter {
             if (actionPlan.length > 1) {
                 clientActionsToConfirm.push(newActiveAction);
             } else {
-                logger.info('ActionLauncher: Suppressing confirmation for single auto-executing action.', { sessionId, actionId: newActiveAction.id });
+                logger.info('ActionLauncher: Single-step plan is ready for auto-execution by PlanExecutor.', { sessionId, actionId: newActiveAction.id });
             }
-        } else {
-            logger.info('ActionLauncher: Auto-executing parameter-less action', { sessionId, actionId: newActiveAction.id });
-            const promise = this.executeAction(
-                sessionId,
-                userId,
-                { // Corrected payload to include arguments
-                  actionId: newActiveAction.id,
-                  toolName: newActiveAction.toolName,
-                  arguments: newActiveAction.arguments
-                },
-                toolOrchestrator,
-                planItem.id,
-                planItem.id
-            );
-            autoExecutionPromises.push(promise);
         }
       }
     }
@@ -134,18 +118,6 @@ export class ActionLauncherService extends EventEmitter {
       sessionId,
       storedActionIds: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
     });
-
-    if (autoExecutionPromises.length > 0) {
-        try {
-            const executedActions = await Promise.all(autoExecutionPromises);
-            logger.info('ActionLauncher: Auto-executed actions finished', { sessionId, count: executedActions.length });
-            // Optionally emit an event for each or for all
-            this.emit('actions_auto_executed', { sessionId, actions: executedActions });
-        } catch (error) {
-            logger.error('ActionLauncher: Error during auto-execution of actions', { sessionId, error });
-            // Decide how to handle partial failures. For now, just log.
-        }
-    }
 
     if (clientActionsNeedingParams.length > 0) {
       const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;

@@ -213,52 +213,39 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 messageId: actionId,
             });
 
-            const completedAction = await actionLauncherService.executeAction(sessionId, userId, actionPayload, toolOrchestrator, currentRun.planId, step.stepId);
-
-            // Update toolExecutionPlan
-            if (!currentRun.toolExecutionPlan) currentRun.toolExecutionPlan = [];
-            let toolIndex = currentRun.toolExecutionPlan.findIndex(step =>
-                step.toolCall.id === completedAction.id ||
-                (step.toolCall.name === completedAction.toolName && step.status === 'pending')
+            // --- FIX: Integrate manual execution with the main PlanExecutorService flow ---
+            // 1. Execute just the single action that was confirmed.
+            const completedAction = await actionLauncherService.executeAction(
+                sessionId,
+                userId,
+                actionPayload,
+                toolOrchestrator,
+                currentRun.planId,
+                step.stepId
             );
 
-            if (toolIndex === -1) {
-                const newStep: ToolExecutionStep = {
-                    stepId: `step_${uuidv4()}`,
-                    toolCall: {
-                        id: completedAction.id || uuidv4(),
-                        name: completedAction.toolName,
-                        arguments: completedAction.arguments || {},
-                        sessionId,
-                        userId,
-                    },
-                    status: 'pending',
-                    startedAt: new Date().toISOString(),
+            // 2. Find and update the specific step in the run object with the result.
+            const stepIndex = currentRun.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+            if (stepIndex !== -1) {
+                currentRun.toolExecutionPlan[stepIndex].status = completedAction.status;
+                currentRun.toolExecutionPlan[stepIndex].result = {
+                    status: completedAction.status === 'completed' ? 'success' : 'failed',
+                    toolName: completedAction.toolName,
+                    data: completedAction.result,
+                    error: completedAction.error,
                 };
-                currentRun.toolExecutionPlan.push(newStep);
-                toolIndex = currentRun.toolExecutionPlan.length - 1;
+                currentRun.toolExecutionPlan[stepIndex].finishedAt = new Date().toISOString();
             }
 
-            currentRun.toolExecutionPlan[toolIndex].status = completedAction.status;
-            currentRun.toolExecutionPlan[toolIndex].result = {
-                status: completedAction.status === 'completed' ? 'success' : 'failed',
-                toolName: completedAction.toolName,
-                data: { records: completedAction.result },
-                error: completedAction.error,
-            };
-            currentRun.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
+            // 3. Hand off the updated run to the PlanExecutorService to continue the rest of the plan.
+            // The executor is smart enough to skip the step that was just completed.
+            const completedRun = await planExecutorService.executePlan(currentRun, userId);
 
-            const allDone = currentRun.toolExecutionPlan.every(step => step.status === 'completed' || step.status === 'failed');
-            if (allDone) {
-                currentRun.status = 'completed';
-                currentRun.completedAt = new Date().toISOString();
-            }
-
-            state.activeRun = currentRun;
+            // 4. Save the final state of the run after the entire plan is complete.
+            state.activeRun = completedRun;
             await sessionState.setItem(sessionId, state);
-            streamManager.sendChunk(sessionId, { type: 'run_updated', content: currentRun });
-
-            return;
+            // The "UNIFIED FINAL RESPONSE LOGIC" will now execute correctly.
+            // --- END OF FIX ---
         }
 
         // --- UPDATE ACTIVE CONNECTION ---
@@ -465,6 +452,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                         await sessionState.setItem(sessionId, state);
                         
                         // After auto-execution, generate a final summary response.
+                        // This check is now handled by the UNIFIED FINAL RESPONSE LOGIC block
+                        /*
                         if (completedRun.status === 'completed') {
                             logger.info('Plan auto-execution complete, generating final response.', { sessionId });
                             
@@ -485,7 +474,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                             if (finalResponseResult.conversationalResponse?.trim()) {
                                 await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);
                             }
-                        }
+                        }*/
 
                     } else {
                         logger.info('Plan requires user input before execution.', { sessionId });
