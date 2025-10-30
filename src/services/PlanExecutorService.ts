@@ -161,7 +161,6 @@ Instructions:
         messages: [{ role: 'system', content: systemPrompt }],
         max_tokens: 2048,
         temperature: 0.1,
-        response_format: { type: 'json_object' },
       });
 
       const content = response.choices[0]?.message?.content;
