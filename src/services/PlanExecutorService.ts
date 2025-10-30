@@ -62,7 +62,7 @@ export class PlanExecutorService {
 
             if (sourceStep && sourceStep.result) {
               // FIX: The result from a tool is nested under a 'data' property. The path needs to be resolved against that.
-              const value = this._get(sourceStep.result, path);
+              const value = this._get(sourceStep.result.data, path);
               if (value !== undefined) {
                 obj[key] = value;
                 placeholdersResolved = true;
@@ -84,7 +84,7 @@ export class PlanExecutorService {
               const sourceStep = run.toolExecutionPlan.find(s => s.stepId === stepId);
 
               if (sourceStep && sourceStep.result) {
-                const value = this._get(sourceStep.result, path);
+                const value = this._get(sourceStep.result.data, path);
                 if (value !== undefined) {
                   placeholdersResolved = true;
                   return String(value);
