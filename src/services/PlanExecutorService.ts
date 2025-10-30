@@ -64,7 +64,7 @@ export class PlanExecutorService {
                 obj[key] = value;
                 placeholdersResolved = true;
               } else {
-                logger.warn(`Could not resolve placeholder: ${originalString}. Path '${path}' not found in step ${stepId}.`, { runId: run.id });
+                logger.warn(`Could not resolve placeholder: ${originalString}`, { runId: run.id });
               }
             } else {
               logger.warn(`Could not resolve placeholder: ${originalString}. Step not found.`, { runId: run.id });
@@ -85,7 +85,7 @@ export class PlanExecutorService {
                   placeholdersResolved = true;
                   return String(value);
                 } else {
-                  logger.warn(`Could not resolve placeholder: ${match}. Path '${path}' not found in step ${stepId}.`, { runId: run.id });
+                  logger.warn(`Could not resolve placeholder: ${match}`, { runId: run.id });
                   return match;
                 }
               } else {
@@ -111,7 +111,7 @@ export class PlanExecutorService {
     validationError: string
   ): Promise<Record<string, any>> {
     const toolName = currentStep.toolCall.name;
-    logger.info('Attempting to fix arguments with LLM using previous step context.', { toolName, validationError });
+    logger.info('Attempting to fix arguments with LLM', { toolName, validationError });
     const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
     if (!toolSchema) {
       throw new Error(`Cannot fix arguments: No schema found for tool ${toolName}`);
@@ -120,35 +120,21 @@ export class PlanExecutorService {
     const currentStepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === currentStep.stepId);
     const previousStep = currentStepIndex > 0 ? run.toolExecutionPlan[currentStepIndex - 1] : null;
 
-    let previousStepResultJson = "No previous step result available. You must infer missing arguments from the user's original request.";
+    let previousStepResultJson = "No previous step result available.";
     if (previousStep && previousStep.status === 'completed' && previousStep.result) {
         previousStepResultJson = JSON.stringify(previousStep.result.data, null, 2);
     }
 
-    const systemPrompt = `You are an expert AI agent data resolver. A tool call is about to fail because its arguments are invalid or missing required data. Your task is to fix them.
+    const systemPrompt = `You are an expert AI agent data resolver. Fix these invalid tool arguments.
 
-**User's Original Request:**
-${run.userInput}
+User's Request: ${run.userInput}
+Tool: ${toolName}
+Schema: ${JSON.stringify(toolSchema, null, 2)}
+Previous Result: ${previousStepResultJson}
+Invalid Arguments: ${JSON.stringify(invalidArgs, null, 2)}
+Error: ${validationError}
 
-Tool Name: ${toolName}
-Tool Schema:
-${JSON.stringify(toolSchema, null, 2)}
-
-**Previous Step's Result (JSON Data):**
-${previousStepResultJson}
-
-**Current Invalid Arguments:**
-${JSON.stringify(invalidArgs, null, 2)}
-
-**Validation Error Message:**
-${validationError}
-
-Instructions:
-1.  **Analyze the Goal**: Understand the user's original request.
-2.  **Analyze the Error**: The "Validation Error" tells you exactly what's wrong.
-3.  **Find the Missing Data**: Look at the "Previous Step's Result" for needed data.
-4.  **Construct the Final Arguments**: Create a complete, valid JSON object.
-5.  **Output ONLY the corrected JSON object.** No other text or markdown.`;
+Output ONLY valid JSON with corrected arguments. No explanation.`;
 
     try {
       const response = await this.groqClient.chat.completions.create({
@@ -164,90 +150,122 @@ Instructions:
       }
 
       const correctedArgs = JSON.parse(content);
-      logger.info('LLM provided corrected arguments.', { toolName, correctedArgs });
+      logger.info('LLM corrected arguments', { toolName, correctedArgs });
       return correctedArgs;
     } catch (llmError: any) {
-      logger.error('LLM-based argument correction failed.', { toolName, error: llmError.message });
+      logger.error('LLM correction failed', { toolName, error: llmError.message });
       throw new Error(`Argument validation failed: ${validationError}`);
     }
   }
 
   public async executePlan(run: Run, userId: string): Promise<Run> {
-    logger.info('Starting automatic plan execution', { runId: run.id, planId: run.planId });
+    logger.info('Starting plan execution', { 
+      runId: run.id,
+      totalSteps: run.toolExecutionPlan.length,
+      steps: run.toolExecutionPlan.map(s => ({ 
+        id: s.stepId, 
+        tool: s.toolCall.name, 
+        status: s.status 
+      }))
+    });
 
     this.streamManager.sendChunk(run.sessionId, {
       type: 'run_updated',
       content: { ...run, status: 'running' },
     });
 
-    for (const step of run.toolExecutionPlan) {
-      const stepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+    for (let i = 0; i < run.toolExecutionPlan.length; i++) {
+      const step = run.toolExecutionPlan[i];
+      const stepIndex = i;
 
-      // --- REFACTORED: Simplified handling of completed steps ---
+      logger.info(`Processing step ${stepIndex + 1}/${run.toolExecutionPlan.length}`, {
+        stepId: step.stepId,
+        tool: step.toolCall.name,
+        status: step.status
+      });
+
+      // === HANDLE ALREADY COMPLETED STEPS ===
       if (step.status === 'completed') {
-        logger.info(`Step already completed: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
-        // Don't continue - let the follow-up logic at the end of loop handle this
-      } else {
-        // --- EXECUTE PENDING STEP ---
-        logger.info(`Executing step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
+        logger.info('Step already completed', { stepId: step.stepId });
+        
+        // Generate completion message for this step
+        const completionStep: ActionStep = {
+          id: step.stepId,
+          intent: step.toolCall.name,
+          tool: step.toolCall.name,
+          arguments: step.toolCall.arguments,
+          status: 'completed',
+        };
+        
+        await this.plannerService.streamStepCompletion(
+          completionStep, 
+          step.result?.data || {}, 
+          run.sessionId
+        );
+        
+        // Fall through to follow-up logic
+      } 
+      // === EXECUTE PENDING STEPS ===
+      else if (step.status === 'pending' || step.status === 'ready') {
+        logger.info('Executing step', { stepId: step.stepId });
         step.status = 'running';
         this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
         try {
-          const { resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run);
+          // Resolve placeholders
+          const { resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(
+            step.toolCall.arguments, 
+            run
+          );
           step.toolCall.arguments = resolvedArgs;
           
-          const stepIndexToUpdate = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
-          if (stepIndexToUpdate !== -1) {
-              run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments = resolvedArgs;
-          }
-          
-          const stepForAnnouncement: ActionStep = {
+          // Announce the step
+          const announcementStep: ActionStep = {
             id: step.stepId,
             intent: step.toolCall.name,
             tool: step.toolCall.name,
             arguments: resolvedArgs,
             status: 'executing',
           };
-          await this.plannerService.streamStepAnnouncement(stepForAnnouncement, run.sessionId, placeholdersResolved);
+          await this.plannerService.streamStepAnnouncement(
+            announcementStep, 
+            run.sessionId, 
+            placeholdersResolved
+          );
           this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
+          // Validate arguments
           try {
             this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, resolvedArgs);
           } catch (error: any) {
-            logger.warn('Zod validation failed, attempting LLM fallback.', {
-              runId: run.id,
-              stepId: step.stepId,
-              error: error.message,
+            logger.warn('Validation failed, attempting LLM fix', { 
+              stepId: step.stepId, 
+              error: error.message 
             });
             
-            const fixedArguments = await this._fixArgumentsWithLlm(step, run, resolvedArgs, error.message);
+            const fixedArguments = await this._fixArgumentsWithLlm(
+              step, 
+              run, 
+              resolvedArgs, 
+              error.message
+            );
 
-            try {
-              this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, fixedArguments);
-              logger.info('LLM-corrected arguments passed validation.', { runId: run.id, stepId: step.stepId });
-            } catch (finalError: any) {
-              logger.error('Validation failed even after LLM correction. Halting step.', {
-                runId: run.id,
-                stepId: step.stepId,
-                error: finalError.message,
-              });
-              throw finalError;
-            }
-            run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments = fixedArguments;
+            // Re-validate
+            this.toolConfigManager.validateToolArgsWithZod(step.toolCall.name, fixedArguments);
+            step.toolCall.arguments = fixedArguments;
           }
 
+          // Execute the tool
           const payload = {
             actionId: step.toolCall.id,
             toolName: step.toolCall.name,
-            arguments: run.toolExecutionPlan[stepIndexToUpdate].toolCall.arguments,
+            arguments: step.toolCall.arguments,
           };
 
-          logger.info('PlanExecutorService: Executing step with resolved arguments', {
-            runId: run.id,
+          logger.info('Executing tool', {
             stepId: step.stepId,
-            toolName: step.toolCall.name,
-            arguments: JSON.stringify(payload.arguments, null, 2)
+            tool: step.toolCall.name,
+            arguments: payload.arguments
           });
 
           const completedAction = await this.actionLauncherService.executeAction(
@@ -259,87 +277,124 @@ Instructions:
             step.stepId
           );
 
-          if (stepIndex > -1) {
-            run.toolExecutionPlan[stepIndex].status = completedAction.status;
-            run.toolExecutionPlan[stepIndex].result = {
-              status: completedAction.status === 'completed' ? 'success' : 'failed',
-              toolName: completedAction.toolName,
-              data: completedAction.result,
-              error: completedAction.error,
-            };
-            run.toolExecutionPlan[stepIndex].finishedAt = new Date().toISOString();
-          }
+          // Update step result
+          step.status = completedAction.status;
+          step.result = {
+            status: completedAction.status === 'completed' ? 'success' : 'failed',
+            toolName: completedAction.toolName,
+            data: completedAction.result,
+            error: completedAction.error,
+          };
+          step.finishedAt = new Date().toISOString();
           
           this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
+          // Handle failure
           if (completedAction.status === 'failed') {
-            logger.error('Step failed, halting plan execution.', { runId: run.id, stepId: step.stepId, error: completedAction.error });
+            logger.error('Step failed', { stepId: step.stepId, error: completedAction.error });
             run.status = 'failed';
-            const stepForCompletion: ActionStep = {
+            
+            const failureStep: ActionStep = {
               id: step.stepId,
               intent: step.toolCall.name,
               tool: step.toolCall.name,
               arguments: step.toolCall.arguments,
               status: 'failed',
             };
-            await this.plannerService.streamStepCompletion(stepForCompletion, { error: completedAction.error }, run.sessionId);
+            await this.plannerService.streamStepCompletion(
+              failureStep, 
+              { error: completedAction.error }, 
+              run.sessionId
+            );
+            
             this.streamManager.sendChunk(run.sessionId, {
               type: 'error',
-              content: `Action '${step.toolCall.name}' failed: ${completedAction.error || 'An unknown error occurred.'}`,
+              content: `Action '${step.toolCall.name}' failed: ${completedAction.error}`,
               messageId: step.toolCall.id,
               isFinal: true,
             });
             this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
             return run;
           }
-        } catch (error: any) {
-          logger.error('An unexpected error occurred during step execution, halting plan.', {
-            runId: run.id,
-            stepId: step.stepId,
-            error: error.message,
-          });
-          const stepForCompletion: ActionStep = {
-              id: step.stepId,
-              intent: step.toolCall.name,
-              tool: step.toolCall.name,
-              arguments: step.toolCall.arguments,
-              status: 'failed',
+
+          // Generate completion message
+          const successStep: ActionStep = {
+            id: step.stepId,
+            intent: step.toolCall.name,
+            tool: step.toolCall.name,
+            arguments: step.toolCall.arguments,
+            status: 'completed',
           };
-          await this.plannerService.streamStepCompletion(stepForCompletion, { error: error.message }, run.sessionId);
+          await this.plannerService.streamStepCompletion(
+            successStep, 
+            completedAction.result, 
+            run.sessionId
+          );
+
+        } catch (error: any) {
+          logger.error('Step execution error', { stepId: step.stepId, error: error.message });
+          
+          const errorStep: ActionStep = {
+            id: step.stepId,
+            intent: step.toolCall.name,
+            tool: step.toolCall.name,
+            arguments: step.toolCall.arguments,
+            status: 'failed',
+          };
+          await this.plannerService.streamStepCompletion(
+            errorStep, 
+            { error: error.message }, 
+            run.sessionId
+          );
+          
           this.streamManager.sendChunk(run.sessionId, {
-              type: 'error',
-              content: `Execution of '${step.toolCall.name}' failed: ${error.message || 'An unexpected error occurred.'}`,
-              messageId: step.toolCall.id,
-              isFinal: true,
+            type: 'error',
+            content: `Execution failed: ${error.message}`,
+            messageId: step.toolCall.id,
+            isFinal: true,
           });
+          
           run.status = 'failed';
           this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
           return run;
         }
       }
 
-      // --- UNIFIED FOLLOW-UP LOGIC: Runs after EVERY completed step ---
+      // === FOLLOW-UP LOGIC ===
       const isLastStep = stepIndex === run.toolExecutionPlan.length - 1;
+      
       if (step.status === 'completed' && !isLastStep) {
         const nextStep = run.toolExecutionPlan[stepIndex + 1];
-        logger.info('Generating follow-up after completed step', { 
-          currentStepId: step.stepId, 
-          nextStepId: nextStep.stepId 
+        
+        logger.info('Generating follow-up', { 
+          currentStep: step.stepId,
+          nextStep: nextStep.stepId 
         });
         
         try {
-          const { summary, nextToolCall } = await this.followUpService.generateFollowUp(run, nextStep);
+          const { summary, nextToolCall } = await this.followUpService.generateFollowUp(
+            run, 
+            nextStep
+          );
           
-          // CRITICAL FIX: Use a UNIQUE message ID for the follow-up summary
-          // Don't use step.toolCall.id or nextStep.toolCall.id - create a new one!
-          const followUpMessageId = `${step.stepId}_followup`;
-          
+          // Stream follow-up with unique message ID
           if (summary) {
+            const followUpMessageId = `${step.stepId}_followup`;
+            
+            logger.info('Streaming follow-up', { 
+              stepId: step.stepId, 
+              messageId: followUpMessageId,
+              summary 
+            });
+            
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
               content: { status: 'START_STREAM' }, 
-              messageId: followUpMessageId  // UNIQUE ID for follow-up
+              messageId: followUpMessageId
             });
+            
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
               content: { 
@@ -348,35 +403,40 @@ Instructions:
               }, 
               messageId: followUpMessageId 
             });
+            
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
               content: { status: 'END_STREAM' }, 
               messageId: followUpMessageId, 
               isFinal: true 
             });
-            logger.info('Streamed follow-up summary', { stepId: step.stepId, summary, messageId: followUpMessageId });
+            
+            logger.info('Follow-up streamed', { messageId: followUpMessageId });
           }
           
-          // Then update the next step's arguments if they were resolved
-          if (nextToolCall && nextToolCall.arguments) {
+          // Update next step arguments if resolved
+          if (nextToolCall?.arguments) {
             nextStep.toolCall.arguments = nextToolCall.arguments;
-            logger.info('FollowUpService resolved arguments for next step', { 
+            logger.info('Arguments resolved for next step', { 
               nextStepId: nextStep.stepId, 
               resolvedArgs: nextToolCall.arguments 
             });
             this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
           }
         } catch (followUpError: any) {
-          logger.error('Follow-up generation failed, but continuing execution', {
+          logger.error('Follow-up generation failed', {
             stepId: step.stepId,
             error: followUpError.message
           });
-          // Don't halt the plan for follow-up failures
+          // Continue execution despite follow-up failure
         }
       }
     }
 
-    logger.info('Plan execution completed successfully.', { runId: run.id });
+    // Plan completed
+    logger.info('Plan execution completed', { runId: run.id });
     run.status = 'completed';
     run.completedAt = new Date().toISOString();
     this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
