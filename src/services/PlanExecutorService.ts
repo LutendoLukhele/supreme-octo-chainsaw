@@ -7,6 +7,7 @@ import { ToolOrchestrator } from './tool/ToolOrchestrator';
 import { Run, ToolExecutionStep } from './tool/run.types';
 import Groq from 'groq-sdk';
 import { ActionStep, PlannerService } from './PlannerService';
+import { FollowUpService } from './FollowUpService';
 
 const logger = winston.createLogger({
   level: 'info',
@@ -22,6 +23,7 @@ export class PlanExecutorService {
     private toolConfigManager: ToolConfigManager,
     private groqClient: Groq,
     private plannerService: PlannerService, // Add PlannerService
+    private followUpService: FollowUpService,
   ) {}
 
   private _get(obj: any, path: string, defaultValue: any = undefined) {
@@ -254,12 +256,22 @@ ${JSON.stringify(toolSchema, null, 2)}
       this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
 
       try {
-        // --- FIX: Always resolve placeholders before validation and execution ---
-        const { resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run);
+        let resolvedArgs: Record<string, any>;
+        let placeholdersResolved = false;
+        const currentStepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+
+        // --- FIX: Use LLM for argument resolution on dependent steps ---
+        if (currentStepIndex > 0) {
+            logger.info('Dependent step found. Using LLM for smart argument resolution.', { stepId: step.stepId });
+            resolvedArgs = await this._resolveArgumentsWithLlm(step, run);
+            placeholdersResolved = true; // The LLM inherently resolves the data dependencies
+        } else {
+            // For the first step, use simple placeholder replacement (if any)
+            ({ resolvedArgs, placeholdersResolved } = this._resolvePlaceholders(step.toolCall.arguments, run));
+        }
 
         // Update the step's arguments with the resolved values for this execution
         step.toolCall.arguments = resolvedArgs;
-        // --- END OF FIX ---
         
         // --- This block remains to update the client with the resolved arguments ---
         const stepIndexToUpdate = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
@@ -351,6 +363,16 @@ ${JSON.stringify(toolSchema, null, 2)}
         if (completedAction.status === 'failed') {
           logger.error('Step failed, halting plan execution.', { runId: run.id, stepId: step.stepId, error: completedAction.error });
           run.status = 'failed';
+          // --- FIX: Announce step failure conversationally ---
+          const stepForCompletion: ActionStep = {
+            id: step.stepId,
+            intent: step.toolCall.name,
+            tool: step.toolCall.name,
+            arguments: step.toolCall.arguments,
+            status: 'failed',
+          };
+          await this.plannerService.streamStepCompletion(stepForCompletion, { error: completedAction.error }, run.sessionId);
+          // --- END OF FIX ---
           // Send a clear failure message to the client
           this.streamManager.sendChunk(run.sessionId, {
             type: 'error',
@@ -370,6 +392,29 @@ ${JSON.stringify(toolSchema, null, 2)}
             status: 'completed',
           };
           await this.plannerService.streamStepCompletion(stepForCompletion, completedAction.result, run.sessionId);
+
+          // --- FIX: Generate conversational follow-up and resolve next step's args ---
+          const isLastStep = stepIndex === run.toolExecutionPlan.length - 1;
+          if (!isLastStep) {
+            const nextStep = run.toolExecutionPlan[stepIndex + 1];
+            const { summary, nextToolCall } = await this.followUpService.generateFollowUp(run, nextStep);
+
+            if (summary) {
+              // Stream the conversational summary
+              this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'START_STREAM' }, messageId: nextStep.toolCall.id });
+              this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'STREAMING', segment: { segment: summary, styles: [], type: 'text' } }, messageId: nextStep.toolCall.id });
+              this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'END_STREAM' }, messageId: nextStep.toolCall.id, isFinal: true });
+            }
+
+            if (nextToolCall) {
+              // Update the run object with the newly resolved arguments for the next step
+              nextStep.toolCall.arguments = nextToolCall.arguments;
+              logger.info('FollowUpService resolved arguments for the next step.', { nextStepId: nextStep.stepId, resolvedArgs: nextToolCall.arguments });
+              // Send the updated run to the client so it sees the resolved args
+              this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
+            }
+          }
+          // --- END OF FIX ---
         }
       } catch (error: any) {
         logger.error('An unexpected error occurred during step execution, halting plan.', {
@@ -377,6 +422,16 @@ ${JSON.stringify(toolSchema, null, 2)}
           stepId: step.stepId,
           error: error.message,
         });
+        // --- FIX: Announce step failure conversationally on exception ---
+        const stepForCompletion: ActionStep = {
+            id: step.stepId,
+            intent: step.toolCall.name,
+            tool: step.toolCall.name,
+            arguments: step.toolCall.arguments,
+            status: 'failed',
+        };
+        await this.plannerService.streamStepCompletion(stepForCompletion, { error: error.message }, run.sessionId);
+        // --- END OF FIX ---
         // Send a clear failure message to the client
         this.streamManager.sendChunk(run.sessionId, {
             type: 'error',

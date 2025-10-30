@@ -65,6 +65,7 @@ const nangoService = new NangoService();
 const streamManager = new StreamManager({ logger });
 const dataDependencyService = new DataDependencyService();
 const resolver = new Resolver(dataDependencyService);
+const followUpService = new FollowUpService(groqClient, CONFIG.MODEL_NAME, CONFIG.MAX_TOKENS);
 const toolOrchestrator = new ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
 const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager);
 const beatEngine = new BeatEngine(toolConfigManager);
@@ -86,7 +87,7 @@ const actionLauncherService = new ActionLauncherService(
     beatEngine,
 );
 
-const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService);
+const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService);
 
 // --- Session State Management ---
 interface SessionState {
