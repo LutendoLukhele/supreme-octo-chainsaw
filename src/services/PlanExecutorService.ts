@@ -187,9 +187,29 @@ Instructions:
     });
 
     for (const step of run.toolExecutionPlan) {
+      const stepIndex = run.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+
       if (step.status === 'completed') {
         logger.info(`Skipping already completed step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
+
+        // --- FIX: Trigger follow-up for manually completed steps ---
+        const isLastStep = stepIndex === run.toolExecutionPlan.length - 1;
+        if (!isLastStep) {
+          const nextStep = run.toolExecutionPlan[stepIndex + 1];
+          logger.info('Manually completed step detected. Generating follow-up before continuing.', { stepId: step.stepId, nextStepId: nextStep.stepId });
+          const { summary, nextToolCall } = await this.followUpService.generateFollowUp(run, nextStep);
+          if (summary) {
+            this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'START_STREAM' }, messageId: nextStep.toolCall.id });
+            this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'STREAMING', segment: { segment: summary, styles: [], type: 'text' } }, messageId: nextStep.toolCall.id });
+            this.streamManager.sendChunk(run.sessionId, { type: 'conversational_text_segment', content: { status: 'END_STREAM' }, messageId: nextStep.toolCall.id, isFinal: true });
+          }
+          if (nextToolCall) {
+            nextStep.toolCall.arguments = nextToolCall.arguments;
+            this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
+          }
+        }
         continue;
+        // --- END OF FIX ---
       }
 
       logger.info(`Executing step: ${step.stepId}`, { runId: run.id, toolName: step.toolCall.name });
@@ -275,9 +295,7 @@ Instructions:
         );
 
         // Update the step in the run object
-        const stepIndex = run.toolExecutionPlan.findIndex(
-          (planStep: ToolExecutionStep) => planStep.stepId === step.stepId
-        );
+        // const stepIndex is now defined at the top of the loop
         if (stepIndex > -1) {
           run.toolExecutionPlan[stepIndex].status = completedAction.status;
           run.toolExecutionPlan[stepIndex].result = {
