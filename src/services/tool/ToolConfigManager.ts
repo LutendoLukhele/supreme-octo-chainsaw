@@ -255,6 +255,14 @@ export class ToolConfigManager {
   }
 
   /**
+   * Get provider config key for a specific tool
+   */
+  public getProviderConfigKeyForTool(toolName: string): string | undefined {
+    const tool = this.getToolDefinition(toolName);
+    return tool?.providerConfigKey;
+  }
+
+  /**
    * Check if a tool exists
    */
   public toolExists(toolName: string): boolean {

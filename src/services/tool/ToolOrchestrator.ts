@@ -3,7 +3,7 @@ import { ToolCall } from './tool.types';
 import { NangoService } from '../NangoService';
 import { ToolResult } from '../conversation/types';
 import winston from 'winston';
-import * as ToolConfigManager from './ToolConfigManager';
+import { ToolConfigManager } from './ToolConfigManager';
 import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '../../config';
 import Redis from 'ioredis';
@@ -21,10 +21,10 @@ const sql = neon('postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-adv
 
 export class ToolOrchestrator extends BaseService {
     private nangoService: NangoService;
-    private toolConfigManager: ToolConfigManager.ToolConfigManager;
+    private toolConfigManager: ToolConfigManager;
     logger: any;
 
-    constructor(config: any) {
+    constructor(config: { logger: winston.Logger; nangoService: NangoService; toolConfigManager: ToolConfigManager; [key: string]: any; }) {
         super({ logger: config.logger });
         this.nangoService = config.nangoService;
         this.toolConfigManager = config.toolConfigManager;
