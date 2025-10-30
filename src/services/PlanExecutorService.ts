@@ -330,12 +330,15 @@ Instructions:
         try {
           const { summary, nextToolCall } = await this.followUpService.generateFollowUp(run, nextStep);
           
-          // CRITICAL FIX: Stream the conversational summary FIRST
+          // CRITICAL FIX: Use a UNIQUE message ID for the follow-up summary
+          // Don't use step.toolCall.id or nextStep.toolCall.id - create a new one!
+          const followUpMessageId = `${step.stepId}_followup`;
+          
           if (summary) {
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
               content: { status: 'START_STREAM' }, 
-              messageId: step.toolCall.id  // Use current step's ID for the summary
+              messageId: followUpMessageId  // UNIQUE ID for follow-up
             });
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
@@ -343,15 +346,15 @@ Instructions:
                 status: 'STREAMING', 
                 segment: { segment: summary, styles: [], type: 'text' } 
               }, 
-              messageId: step.toolCall.id 
+              messageId: followUpMessageId 
             });
             this.streamManager.sendChunk(run.sessionId, { 
               type: 'conversational_text_segment', 
               content: { status: 'END_STREAM' }, 
-              messageId: step.toolCall.id, 
+              messageId: followUpMessageId, 
               isFinal: true 
             });
-            logger.info('Streamed follow-up summary', { stepId: step.stepId, summary });
+            logger.info('Streamed follow-up summary', { stepId: step.stepId, summary, messageId: followUpMessageId });
           }
           
           // Then update the next step's arguments if they were resolved
