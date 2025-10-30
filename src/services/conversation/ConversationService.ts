@@ -206,14 +206,10 @@ export class ConversationService extends EventEmitter {
                 ...this.prepareHistoryForLLM(historyForThisStream)
             ];
 
-            // If currentUserMessage is empty, we are in a "summary" mode after a tool call.
-            // In this mode, we should NOT allow the model to call more tools, only generate text.
-            const isSummaryMode = !currentUserMessage;
-            const finalToolsForStream = isSummaryMode ? undefined : [...toolsForThisStream, PLANNER_META_TOOL];
-            if (!isSummaryMode) {
-                logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
-            }
-            
+            // Always provide the tools. The prompt guides the LLM on when to use them.
+            const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
+            logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
+
             const responseStream = await this.client.chat.completions.create({
                 model: this.model,
                 messages: messagesForApi as any,
