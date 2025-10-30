@@ -38,6 +38,7 @@ export interface ToolConfig {
 }
 
 export class ToolConfigManager {
+  [x: string]: any;
   private toolConfigs: Record<string, ToolConfig[]> = {};
   private ajv: InstanceType<typeof Ajv>;
 
@@ -48,7 +49,7 @@ export class ToolConfigManager {
   }
 
   private loadToolConfigs(configPath?: string): void {
-    const defaultPath = path.join(process.cwd(), 'src', 'config', 'toolConfig.json');
+    const defaultPath = path.join(process.cwd(), 'src', 'config', 'tool-config.json');
     const finalPath = configPath || defaultPath;
 
     try {
