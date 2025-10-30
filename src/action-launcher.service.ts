@@ -105,19 +105,11 @@ export class ActionLauncherService extends EventEmitter {
         if (hasParams) {
             // Suppress confirmation for single-step auto-executing plans.
             if (actionPlan.length > 1) {
-                clientActionsToConfirm.push(newActiveAction);
-            } else {
-                logger.info('ActionLauncher: Single-step plan is ready for auto-execution by PlanExecutor.', { sessionId, actionId: newActiveAction.id });
+              clientActionsToConfirm.push(newActiveAction); // Always require confirmation for multi-step
             }
         }
       }
     }
-
-    // Log all stored action IDs for debugging
-    logger.info('ActionLauncher: All actions stored', {
-      sessionId,
-      storedActionIds: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
-    });
 
     if (clientActionsNeedingParams.length > 0) {
       const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;

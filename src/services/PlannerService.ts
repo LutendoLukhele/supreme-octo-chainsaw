@@ -1,3 +1,4 @@
+import { DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE } from './conversation/prompts/dedicatedPlannerPrompt';
 import Groq from 'groq-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import winston from 'winston';
@@ -6,8 +7,6 @@ import { EventEmitter } from 'events';
 import { StreamChunk } from './stream/types';
 import { ChatCompletionMessageParam } from 'groq-sdk/resources/chat/completions';
 import { MessageType } from './conversation/types';
-import { DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE } from './conversation/prompts/dedicatedPlannerPrompt';
-
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
