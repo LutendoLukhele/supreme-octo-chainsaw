@@ -62,6 +62,7 @@ const RunManager_1 = require("./services/tool/RunManager");
 const BeatEngine_1 = require("./BeatEngine");
 const DataDependencyService_1 = require("./services/data/DataDependencyService");
 const Resolver_1 = require("./services/data/Resolver");
+const session_service_1 = require("./services/session.service");
 const PlanExecutorService_1 = require("./services/PlanExecutorService");
 const router_service_1 = require("./services/router.service");
 const prompt_generator_service_1 = require("./services/prompt-generator.service");
@@ -74,6 +75,8 @@ const documents_1 = __importDefault(require("./routes/documents"));
 const export_1 = __importDefault(require("./routes/export"));
 const interpret_1 = __importDefault(require("./routes/interpret"));
 const sessions_1 = __importDefault(require("./routes/sessions"));
+const HistoryService_1 = require("./services/HistoryService");
+const history_1 = __importDefault(require("./routes/history"));
 const logger = winston_1.default.createLogger({
     level: 'info',
     format: winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.json()),
@@ -85,10 +88,11 @@ const nangoService = new NangoService_1.NangoService();
 const streamManager = new StreamManager_1.StreamManager({ logger });
 const dataDependencyService = new DataDependencyService_1.DataDependencyService();
 const resolver = new Resolver_1.Resolver(dataDependencyService);
-const toolOrchestrator = new ToolOrchestrator_1.ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver });
-const plannerService = new PlannerService_1.PlannerService(config_1.CONFIG.OPEN_AI_API_KEY, config_1.CONFIG.MAX_TOKENS, toolConfigManager);
+const followUpService = new FollowUpService_1.FollowUpService(groqClient, config_1.CONFIG.MODEL_NAME, config_1.CONFIG.MAX_TOKENS);
+const toolOrchestrator = new ToolOrchestrator_1.ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
+const plannerService = new PlannerService_1.PlannerService(config_1.CONFIG.GROQ_API_KEY, config_1.CONFIG.MAX_TOKENS, toolConfigManager);
 const beatEngine = new BeatEngine_1.BeatEngine(toolConfigManager);
-const followUpService = new FollowUpService_1.FollowUpService(groqClient, config_1.CONFIG.MODEL_NAME, 150, toolConfigManager);
+const historyService = new HistoryService_1.HistoryService(redis);
 const conversationService = new ConversationService_1.ConversationService({
     groqApiKey: config_1.CONFIG.GROQ_API_KEY,
     model: config_1.CONFIG.MODEL_NAME,
@@ -100,10 +104,11 @@ const conversationService = new ConversationService_1.ConversationService({
     tools: [],
 });
 const actionLauncherService = new action_launcher_service_1.ActionLauncherService(conversationService, toolConfigManager, beatEngine);
-const planExecutorService = new PlanExecutorService_1.PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager);
+const planExecutorService = new PlanExecutorService_1.PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService, historyService);
 const sessionState = storage.create({ dir: 'sessions' });
 (async () => {
     await sessionState.init();
+    await session_service_1.sessionService.init();
     logger.info('Persistent session storage initialized.');
 })();
 async function streamText(sessionId, messageId, text) {
@@ -126,6 +131,8 @@ app.use('/api/documents', documents_1.default);
 app.use('/api/export', export_1.default);
 app.use('/api/interpret', interpret_1.default);
 app.use('/api/sessions', sessions_1.default);
+app.locals.historyService = historyService;
+app.use('/history', history_1.default);
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -137,28 +144,46 @@ actionLauncherService.on('send_chunk', (sessionId, chunk) => {
 plannerService.on('send_chunk', (sessionId, chunk) => {
     streamManager.sendChunk(sessionId, chunk);
 });
-wss.on('connection', (ws) => {
-    const sessionId = (0, uuid_1.v4)();
+wss.on('connection', (ws, req) => {
+    const sessionId = req.url?.slice(1) || (0, uuid_1.v4)();
     streamManager.addConnection(sessionId, ws);
     logger.info('Client connected', { sessionId });
+    const sessionConfig = {
+        sessionId: sessionId,
+        tools: toolConfigManager.getToolDefinitionsForPlanner(),
+    };
+    streamManager.sendChunk(sessionId, {
+        type: 'session_init',
+        content: sessionConfig
+    });
+    streamManager.sendChunk(sessionId, { type: 'connection_ack', content: { sessionId } });
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'init') {
-                const decodedToken = await firebase_1.auth.verifyIdToken(data.idToken);
-                const userId = decodedToken.uid;
-                await sessionState.setItem(sessionId, { userId });
-                ws.send(JSON.stringify({ type: 'auth_success' }));
-                logger.info('Client authenticated', { userId, sessionId });
-                try {
-                    const activeConnectionId = await redis.get(`active-connection:${userId}`);
-                    if (activeConnectionId) {
-                        logger.info('Warming connection post-auth', { userId, connectionId: '***' });
-                        await nangoService.warmConnection('gmail', activeConnectionId);
+                let userId;
+                if (data.idToken) {
+                    const decodedToken = await firebase_1.auth.verifyIdToken(data.idToken);
+                    userId = decodedToken.uid;
+                    await sessionState.setItem(sessionId, { userId });
+                    streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } });
+                    logger.info('Client authenticated', { userId, sessionId });
+                    try {
+                        const activeConnectionId = await redis.get(`active-connection:${userId}`);
+                        if (activeConnectionId) {
+                            logger.info('Warming connection post-auth', { userId, connectionId: '***' });
+                            await nangoService.warmConnection('gmail', activeConnectionId);
+                        }
+                    }
+                    catch (warmError) {
+                        logger.warn('Post-auth connection warming failed', { userId, error: warmError.message });
                     }
                 }
-                catch (warmError) {
-                    logger.warn('Post-auth connection warming failed', { userId, error: warmError.message });
+                else {
+                    userId = `unauthenticated-user-${(0, uuid_1.v4)()}`;
+                    await sessionState.setItem(sessionId, { userId });
+                    streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } });
+                    logger.info('Unauthenticated session created', { userId, sessionId });
                 }
                 return;
             }
@@ -187,54 +212,15 @@ wss.on('connection', (ws) => {
                     messageId: actionId,
                 });
                 const completedAction = await actionLauncherService.executeAction(sessionId, userId, actionPayload, toolOrchestrator, currentRun.planId, step.stepId);
-                if (!currentRun.toolExecutionPlan)
-                    currentRun.toolExecutionPlan = [];
-                let toolIndex = currentRun.toolExecutionPlan.findIndex(step => step.toolCall.id === completedAction.id ||
-                    (step.toolCall.name === completedAction.toolName && step.status === 'pending'));
-                if (toolIndex === -1) {
-                    const newStep = {
-                        stepId: `step_${(0, uuid_1.v4)()}`,
-                        toolCall: {
-                            id: completedAction.id || (0, uuid_1.v4)(),
-                            name: completedAction.toolName,
-                            arguments: completedAction.arguments || {},
-                            sessionId,
-                            userId,
-                        },
-                        status: 'pending',
-                        startedAt: new Date().toISOString(),
-                    };
-                    currentRun.toolExecutionPlan.push(newStep);
-                    toolIndex = currentRun.toolExecutionPlan.length - 1;
+                const stepIndex = currentRun.toolExecutionPlan.findIndex(s => s.stepId === step.stepId);
+                if (stepIndex !== -1) {
+                    currentRun.toolExecutionPlan[stepIndex].status = completedAction.status;
+                    currentRun.toolExecutionPlan[stepIndex].result = { status: completedAction.status === 'completed' ? 'success' : 'failed', toolName: completedAction.toolName, data: completedAction.result, error: completedAction.error };
+                    currentRun.toolExecutionPlan[stepIndex].finishedAt = new Date().toISOString();
                 }
-                currentRun.toolExecutionPlan[toolIndex].status = completedAction.status;
-                currentRun.toolExecutionPlan[toolIndex].result = {
-                    status: completedAction.status === 'completed' ? 'success' : 'failed',
-                    toolName: completedAction.toolName,
-                    data: { records: completedAction.result },
-                    error: completedAction.error,
-                };
-                currentRun.toolExecutionPlan[toolIndex].finishedAt = new Date().toISOString();
-                const allDone = currentRun.toolExecutionPlan.every(step => step.status === 'completed' || step.status === 'failed');
-                if (allDone) {
-                    currentRun.status = 'completed';
-                    currentRun.completedAt = new Date().toISOString();
-                }
-                state.activeRun = currentRun;
+                const completedRun = await planExecutorService.executePlan(currentRun, userId);
+                state.activeRun = completedRun;
                 await sessionState.setItem(sessionId, state);
-                streamManager.sendChunk(sessionId, { type: 'run_updated', content: currentRun });
-                if (completedAction.status === 'completed') {
-                    try {
-                        const followUpResult = await followUpService.generateFollowUp(currentRun, sessionId, (0, uuid_1.v4)());
-                        const followUpText = followUpResult.summary;
-                        if (followUpText?.trim())
-                            await streamText(sessionId, (0, uuid_1.v4)(), followUpText);
-                    }
-                    catch (error) {
-                        logger.error('Failed to generate follow-up message.', { error: error.message, sessionId });
-                    }
-                }
-                return;
             }
             if (data.type === 'update_active_connection' && data.content) {
                 const { connectionId } = data.content;
@@ -244,18 +230,138 @@ wss.on('connection', (ws) => {
                 logger.info(`Successfully set active Nango connection for user`, { userId });
                 try {
                     const warmSuccess = await nangoService.warmConnection('gmail', connectionId);
-                    ws.send(JSON.stringify({ type: 'connection_updated_ack', content: { warmed: warmSuccess } }));
+                    streamManager.sendChunk(sessionId, { type: 'connection_updated_ack', content: { warmed: warmSuccess } });
                 }
                 catch (error) {
                     logger.error('Connection warming on update failed', { userId, connectionId: '***', error: error.message });
-                    ws.send(JSON.stringify({ type: 'connection_updated_ack', content: { warmed: false } }));
+                    streamManager.sendChunk(sessionId, { type: 'connection_updated_ack', content: { warmed: false } });
+                }
+                return;
+            }
+            if (data.type === 'rerun_plan' && data.content && data.content.plan) {
+                const savedPlan = data.content.plan;
+                const messageId = (0, uuid_1.v4)();
+                logger.info('Rerunning saved plan', { sessionId, userId, messageId, planSize: savedPlan.length });
+                actionLauncherService.clearActions(sessionId);
+                const run = RunManager_1.RunManager.createRun({
+                    sessionId,
+                    userId,
+                    userInput: `Rerun of a saved plan with ${savedPlan.length} steps.`,
+                    toolExecutionPlan: []
+                });
+                state.activeRun = run;
+                await sessionState.setItem(sessionId, state);
+                streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
+                const newActionPlan = savedPlan.map(step => ({
+                    id: (0, uuid_1.v4)(),
+                    tool: step.toolName,
+                    intent: step.description,
+                    arguments: step.arguments || {},
+                    status: 'ready',
+                }));
+                const enrichedPlan = newActionPlan.map((step) => {
+                    const toolDef = toolConfigManager.getToolDefinition(step.tool);
+                    const toolDisplayName = toolDef?.display_name || toolDef?.displayName || toolDef?.name || step.tool.replace(/_/g, ' ').split(' ').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+                    const parameters = [];
+                    if (toolDef?.parameters?.properties) {
+                        const props = toolDef.parameters.properties;
+                        const required = toolDef.parameters.required || [];
+                        Object.keys(props).forEach((paramName) => {
+                            const prop = props[paramName];
+                            parameters.push({
+                                name: paramName,
+                                type: Array.isArray(prop.type) ? prop.type[0] : (prop.type || 'string'),
+                                description: prop.description || '',
+                                required: required.includes(paramName),
+                                hint: prop.hint || prop.prompt || null,
+                                enumValues: prop.enum || null,
+                                currentValue: step.arguments?.[paramName] || null
+                            });
+                        });
+                    }
+                    return {
+                        id: step.id,
+                        messageId: messageId,
+                        toolName: step.tool,
+                        toolDisplayName,
+                        description: step.intent,
+                        status: step.status,
+                        arguments: step.arguments || {},
+                        parameters,
+                        missingParameters: [],
+                        error: null,
+                        result: null
+                    };
+                });
+                streamManager.sendChunk(sessionId, {
+                    type: 'plan_generated',
+                    content: {
+                        messageId,
+                        planOverview: enrichedPlan,
+                        analysis: `Rerunning saved plan with ${enrichedPlan.length} actions.`
+                    },
+                    messageId,
+                    isFinal: true,
+                });
+                try {
+                    const planTitle = `Rerun: ${savedPlan.length} actions`;
+                    const actions = savedPlan.map((step) => ({
+                        toolName: step.toolName,
+                        description: step.description
+                    }));
+                    const historyId = await historyService.recordPlanCreation(userId, sessionId, run.id, planTitle, actions);
+                    run.historyId = historyId;
+                }
+                catch (error) {
+                    logger.warn('Failed to record rerun in history', { error: error.message });
+                }
+                await actionLauncherService.processActionPlan(newActionPlan, sessionId, userId, messageId, toolOrchestrator, run);
+                run.toolExecutionPlan = newActionPlan.map((step) => ({
+                    stepId: step.id,
+                    toolCall: {
+                        id: step.id,
+                        name: step.tool,
+                        arguments: step.arguments,
+                        sessionId,
+                        userId,
+                    },
+                    status: 'pending',
+                    startedAt: new Date().toISOString(),
+                }));
+                await sessionState.setItem(sessionId, state);
+                const actions = actionLauncherService.getActiveActions(sessionId);
+                const needsUserInput = actions.some(a => a.status === 'collecting_parameters');
+                if (!needsUserInput && actions.length > 0) {
+                    logger.info('No user input needed for rerun, starting auto-execution.', { sessionId, runId: run.id });
+                    await planExecutorService.executePlan(run, userId);
+                    if (run.status === 'completed') {
+                        logger.info('Rerun plan auto-execution complete, generating final response.', { sessionId });
+                        run.toolExecutionPlan.forEach(step => {
+                            if (step.status === 'completed' && step.result) {
+                                conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
+                            }
+                        });
+                        const finalResponseResult = await conversationService.processMessageAndAggregateResults(null, sessionId, (0, uuid_1.v4)());
+                        if (finalResponseResult.conversationalResponse?.trim()) {
+                            await streamText(sessionId, (0, uuid_1.v4)(), finalResponseResult.conversationalResponse);
+                        }
+                    }
+                }
+                else {
+                    logger.info('Rerun plan requires user input before execution.', { sessionId });
                 }
                 return;
             }
             if (data.type === 'content' && typeof data.content === 'string') {
                 const messageId = (0, uuid_1.v4)();
                 logger.info('Processing user message', { sessionId, userId, messageId });
-                const processedResult = await conversationService.processMessageAndAggregateResults(data.content, sessionId, messageId, userId);
+                try {
+                    await historyService.recordUserMessage(userId, sessionId, data.content);
+                }
+                catch (error) {
+                    logger.warn('Failed to record user message in history', { error: error.message });
+                }
+                const processedResult = await conversationService.processMessageAndAggregateResults(data.content, sessionId, messageId);
                 const { aggregatedToolCalls, conversationalResponse } = processedResult;
                 if (conversationalResponse?.trim()) {
                     await streamText(sessionId, messageId, conversationalResponse);
@@ -263,43 +369,42 @@ wss.on('connection', (ws) => {
                 const isPlanRequest = aggregatedToolCalls.some(tool => tool.name === 'planParallelActions');
                 const executableToolCount = aggregatedToolCalls.filter(t => t.name !== 'planParallelActions').length;
                 if (isPlanRequest || executableToolCount > 1) {
-                    const run = RunManager_1.RunManager.createRun({
-                        sessionId,
-                        userId,
-                        userInput: data.content,
-                        toolExecutionPlan: []
-                    });
+                    logger.info(`Complex request identified. Routing to PlannerService.`, { sessionId, isPlanRequest, executableToolCount });
+                    const run = RunManager_1.RunManager.createRun({ sessionId, userId, userInput: data.content, toolExecutionPlan: [] });
                     state.activeRun = run;
                     await sessionState.setItem(sessionId, state);
                     streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
                     const toolsForPlanning = aggregatedToolCalls.filter(t => t.name !== 'planParallelActions');
                     const actionPlan = await plannerService.generatePlanWithStepAnnouncements(data.content, toolsForPlanning, sessionId, messageId);
                     if (actionPlan && actionPlan.length > 0) {
-                        logger.info('Storing action plan in ActionLauncherService', {
-                            sessionId,
-                            planLength: actionPlan.length,
-                            actionIds: actionPlan.map(s => s.id)
-                        });
-                        await actionLauncherService.processActionPlan(actionPlan, sessionId, userId, messageId, run);
-                        logger.info('Action plan stored successfully', { sessionId });
+                        await actionLauncherService.processActionPlan(actionPlan, sessionId, userId, messageId, toolOrchestrator, run);
+                        try {
+                            const planTitle = data.content.substring(0, 100);
+                            const actions = actionPlan.map(step => ({
+                                toolName: step.tool,
+                                description: step.intent
+                            }));
+                            const historyId = await historyService.recordPlanCreation(userId, sessionId, run.id, planTitle, actions);
+                            run.historyId = historyId;
+                            logger.info('Plan recorded in history', { sessionId, historyId, planId: run.id });
+                        }
+                        catch (error) {
+                            logger.warn('Failed to record plan in history', { error: error.message });
+                        }
                         const actions = actionLauncherService.getActiveActions(sessionId);
                         const needsUserInput = actions.some(a => a.status === 'collecting_parameters');
                         if (!needsUserInput && actions.length > 0) {
-                            logger.info('No user input needed, starting auto-execution.', { sessionId, runId: run.id });
-                            planExecutorService.executePlan(run, userId);
+                            logger.info('No user input needed for plan, starting auto-execution.', { sessionId, runId: run.id });
+                            const completedRun = await planExecutorService.executePlan(run, userId);
+                            state.activeRun = completedRun;
+                            await sessionState.setItem(sessionId, state);
                         }
                         else {
                             logger.info('Plan requires user input before execution.', { sessionId });
                         }
                         const enrichedPlan = actionPlan.map((step) => {
                             const toolDef = toolConfigManager.getToolDefinition(step.tool);
-                            const toolDisplayName = toolDef?.display_name ||
-                                toolDef?.displayName ||
-                                toolDef?.name ||
-                                step.tool.replace(/_/g, ' ')
-                                    .split(' ')
-                                    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-                                    .join(' ');
+                            const toolDisplayName = toolDef?.display_name || toolDef?.name || step.tool;
                             const parameters = [];
                             if (toolDef?.parameters?.properties) {
                                 const props = toolDef.parameters.properties;
@@ -307,61 +412,130 @@ wss.on('connection', (ws) => {
                                 Object.keys(props).forEach((paramName) => {
                                     const prop = props[paramName];
                                     parameters.push({
-                                        name: paramName,
-                                        type: Array.isArray(prop.type) ? prop.type[0] : (prop.type || 'string'),
-                                        description: prop.description || '',
-                                        required: required.includes(paramName),
-                                        hint: prop.hint || prop.prompt || null,
-                                        enumValues: prop.enum || null,
-                                        currentValue: step.arguments?.[paramName] || null
+                                        name: paramName, type: prop.type || 'string', description: prop.description || '',
+                                        required: required.includes(paramName), hint: prop.hint || null,
+                                        enumValues: prop.enum || null, currentValue: step.arguments?.[paramName] || null
                                     });
                                 });
                             }
                             return {
-                                id: step.id,
-                                messageId: messageId,
-                                toolName: step.tool,
-                                toolDisplayName,
-                                description: step.intent,
-                                status: step.status,
-                                arguments: step.arguments || {},
-                                parameters,
-                                missingParameters: [],
-                                error: null,
-                                result: null
+                                id: step.id, messageId, toolName: step.tool, toolDisplayName,
+                                description: step.intent, status: step.status, arguments: step.arguments || {},
+                                parameters, missingParameters: [], error: null, result: null
                             };
-                        });
-                        logger.info('Sending enriched plan to Flutter client', {
-                            sessionId,
-                            planCount: enrichedPlan.length,
-                            sampleStep: JSON.stringify(enrichedPlan[0], null, 2)
                         });
                         streamManager.sendChunk(sessionId, {
                             type: 'plan_generated',
-                            content: {
-                                messageId,
-                                planOverview: enrichedPlan,
-                                analysis: `Plan generated successfully with ${enrichedPlan.length} actions.`
-                            },
-                            messageId,
-                            isFinal: true,
+                            content: { messageId, planOverview: enrichedPlan, analysis: `Plan generated with ${enrichedPlan.length} actions.` },
+                            messageId, isFinal: true,
                         });
-                        run.toolExecutionPlan = actionPlan.map((step, index) => ({
-                            stepId: step.id || `step_${index + 1}`,
-                            toolCall: {
-                                id: step.id,
-                                name: step.tool,
-                                arguments: step.arguments,
-                                sessionId,
-                                userId,
-                            },
-                            status: 'pending',
-                            startedAt: new Date().toISOString(),
+                        run.toolExecutionPlan = actionPlan.map((step) => ({
+                            stepId: step.id,
+                            toolCall: { id: step.id, name: step.tool, arguments: step.arguments, sessionId, userId },
+                            status: 'pending', startedAt: new Date().toISOString(),
                         }));
                         await sessionState.setItem(sessionId, state);
                     }
                     else if (!conversationalResponse) {
                         await streamText(sessionId, messageId, "I was unable to formulate a plan for your request.");
+                    }
+                }
+                else if (executableToolCount === 1) {
+                    const singleToolCall = aggregatedToolCalls.find(t => t.name !== 'planParallelActions');
+                    logger.info(`Single tool call '${singleToolCall.name}' identified. Bypassing planner.`, { sessionId });
+                    const run = RunManager_1.RunManager.createRun({ sessionId, userId, userInput: data.content, toolExecutionPlan: [] });
+                    state.activeRun = run;
+                    await sessionState.setItem(sessionId, state);
+                    streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
+                    const singleStepPlan = [{
+                            id: singleToolCall.id || (0, uuid_1.v4)(),
+                            intent: `Execute the ${singleToolCall.name} tool.`,
+                            tool: singleToolCall.name,
+                            arguments: singleToolCall.arguments,
+                            status: 'ready',
+                        }];
+                    await plannerService.streamSingleActionAnnouncement(singleStepPlan[0], sessionId);
+                    run.toolExecutionPlan = singleStepPlan.map((step) => ({
+                        stepId: step.id,
+                        toolCall: {
+                            id: step.id,
+                            name: step.tool,
+                            arguments: step.arguments,
+                            sessionId,
+                            userId,
+                        },
+                        status: 'pending',
+                        startedAt: new Date().toISOString(),
+                    }));
+                    await sessionState.setItem(sessionId, state);
+                    await actionLauncherService.processActionPlan(singleStepPlan, sessionId, userId, messageId, toolOrchestrator, run);
+                    const actions = actionLauncherService.getActiveActions(sessionId);
+                    const needsUserInput = actions.some(a => a.status === 'collecting_parameters');
+                    const enrichedPlan = singleStepPlan.map((step) => {
+                        const toolDef = toolConfigManager.getToolDefinition(step.tool);
+                        const toolDisplayName = toolDef?.display_name || toolDef?.name || step.tool;
+                        const parameters = [];
+                        if (toolDef?.parameters?.properties) {
+                            const props = toolDef.parameters.properties;
+                            const required = toolDef.parameters.required || [];
+                            Object.keys(props).forEach((paramName) => {
+                                const prop = props[paramName];
+                                parameters.push({
+                                    name: paramName, type: prop.type || 'string', description: prop.description || '',
+                                    required: required.includes(paramName), hint: prop.hint || null,
+                                    enumValues: prop.enum || null, currentValue: step.arguments?.[paramName] || null
+                                });
+                            });
+                        }
+                        const activeAction = actions.find(a => a.id === step.id);
+                        return {
+                            id: step.id, messageId, toolName: step.tool, toolDisplayName,
+                            description: activeAction?.description || step.intent,
+                            status: activeAction?.status || step.status,
+                            arguments: activeAction?.arguments || step.arguments || {},
+                            parameters: activeAction?.parameters || parameters,
+                            missingParameters: activeAction?.missingParameters || [],
+                            error: null,
+                            result: null
+                        };
+                    });
+                    streamManager.sendChunk(sessionId, {
+                        type: 'plan_generated',
+                        content: { messageId, planOverview: enrichedPlan, analysis: `Preparing to execute action.` },
+                        messageId, isFinal: true,
+                    });
+                    if (!needsUserInput && actions.length > 0) {
+                        logger.info('No user input needed for single action, starting auto-execution.', { sessionId, runId: run.id });
+                        const completedRunAfterExec = await planExecutorService.executePlan(run, userId);
+                        state.activeRun = completedRunAfterExec;
+                        await sessionState.setItem(sessionId, state);
+                    }
+                    else if (actions.length > 0) {
+                        logger.info('Single action requires user input before execution.', { sessionId });
+                    }
+                }
+                else if (!conversationalResponse) {
+                    await streamText(sessionId, messageId, "I'm not sure how to help with that. Could you rephrase?");
+                }
+                const finalRunState = (await sessionState.getItem(sessionId))?.activeRun;
+                if (finalRunState && finalRunState.status === 'completed' && !finalRunState.assistantResponse) {
+                    logger.info('Auto-execution complete, generating final context-aware response.', { sessionId, runId: finalRunState.id });
+                    finalRunState.toolExecutionPlan.forEach(step => {
+                        if (step.status === 'completed' && step.result) {
+                            conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
+                        }
+                    });
+                    const finalResponseResult = await conversationService.processMessageAndAggregateResults(null, sessionId, (0, uuid_1.v4)());
+                    if (finalResponseResult.conversationalResponse?.trim()) {
+                        await streamText(sessionId, (0, uuid_1.v4)(), finalResponseResult.conversationalResponse);
+                        try {
+                            await historyService.recordAssistantMessage(userId, sessionId, finalResponseResult.conversationalResponse);
+                        }
+                        catch (error) {
+                            logger.warn('Failed to record assistant message', { error: error.message });
+                        }
+                        finalRunState.assistantResponse = finalResponseResult.conversationalResponse;
+                        await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
                     }
                 }
                 return;
@@ -412,11 +586,329 @@ wss.on('connection', (ws) => {
                 }
                 return;
             }
+            if (data.type === 'interpret_stream' && data.content) {
+                const { query, sessionId: incomingSessionId, documentIds, enableArtifacts, searchSettings } = data.content || {};
+                if (!query || typeof query !== 'string') {
+                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event: 'error', data: { message: 'Query is required' } });
+                    return;
+                }
+                const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+                const startTime = Date.now();
+                const send = (event, dataObj) => {
+                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event, data: dataObj });
+                };
+                try {
+                    send('start', { requestId, status: 'loading' });
+                    const sessionContext = null;
+                    const docCtx = Array.isArray(documentIds) && documentIds.length
+                        ? await document_service_1.documentService.getDocuments(documentIds)
+                        : [];
+                    const { mode, entities } = await router_service_1.routerService.detectIntent(query);
+                    const groqPrompt = prompt_generator_service_1.promptGeneratorService.generatePrompt(mode, query, entities, {
+                        sessionContext,
+                        documentContext: docCtx,
+                        enableArtifacts,
+                    });
+                    let combinedContent = '';
+                    let reasoning = '';
+                    let model = '';
+                    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+                    try {
+                        const stream = groq_service_1.groqService.executeSearchStream(groqPrompt, { searchSettings });
+                        for await (const chunk of stream) {
+                            if (chunk.model)
+                                model = chunk.model;
+                            if ('usage' in chunk && chunk.usage) {
+                                usage = { ...usage, ...chunk.usage };
+                            }
+                            const choice = chunk.choices?.[0];
+                            const delta = choice?.delta ?? {};
+                            if (typeof delta?.content === 'string' && delta.content.length) {
+                                combinedContent += delta.content;
+                                send('token', { chunk: delta.content });
+                            }
+                            if (typeof delta?.reasoning === 'string' && delta.reasoning.length) {
+                                reasoning += delta.reasoning;
+                                send('reasoning', { text: delta.reasoning });
+                            }
+                        }
+                    }
+                    catch (streamErr) {
+                        const resp = await groq_service_1.groqService.executeSearch(groqPrompt, { searchSettings });
+                        combinedContent = resp.content;
+                        model = resp.model;
+                        usage = resp.usage;
+                        reasoning = resp.reasoning || '';
+                    }
+                    let groqResponse = { content: combinedContent, model, usage, reasoning };
+                    let interpretiveResponse;
+                    try {
+                        interpretiveResponse = response_parser_service_1.responseParserService.parseGroqResponse(combinedContent, mode, groqResponse);
+                    }
+                    catch (parseError) {
+                        send('warning', { type: 'parse_error', message: parseError?.message || 'Failed to parse Groq JSON' });
+                        interpretiveResponse = response_parser_service_1.responseParserService.buildFallbackResponse(combinedContent, mode, groqResponse, parseError?.message || 'Failed to parse Groq JSON');
+                    }
+                    interpretiveResponse.metadata.processingTimeMs = Date.now() - startTime;
+                    const enrichmentDefs = [
+                        {
+                            key: 'cultural',
+                            searchSettings: { include_domains: ['*.museum', '*.gallery', '*.art', 'cosmos.co', 'www.metmuseum.org'] }
+                        },
+                        {
+                            key: 'social',
+                            searchSettings: { include_domains: ['*.substack.com', 'www.reddit.com', 'www.threads.net', 'www.tumblr.com'] }
+                        },
+                        {
+                            key: 'visual',
+                            searchSettings: { include_domains: ['cosmos.co', '*.gallery', 'www.metmuseum.org', 'www.moma.org', 'www.wikiart.org'] }
+                        },
+                    ];
+                    for (const def of enrichmentDefs) {
+                        send('enrichment_start', { key: def.key });
+                        try {
+                            const enrichPrompt = prompt_generator_service_1.promptGeneratorService.generateEnrichmentPrompt(def.key, query, entities);
+                            const resp = await groq_service_1.groqService.executeSearch(enrichPrompt, { searchSettings: def.searchSettings });
+                            const parsed = response_parser_service_1.responseParserService.parseEnrichmentResponse(resp.content);
+                            const localToGlobal = new Map();
+                            parsed.sources.forEach((s, idx) => {
+                                const exIndex = interpretiveResponse.sources.findIndex((e) => e.url === s.url);
+                                if (exIndex >= 0) {
+                                    localToGlobal.set(idx + 1, exIndex + 1);
+                                }
+                                else {
+                                    interpretiveResponse.sources.push({ ...s, index: interpretiveResponse.sources.length + 1 });
+                                    localToGlobal.set(idx + 1, interpretiveResponse.sources.length);
+                                }
+                            });
+                            parsed.segments.forEach((seg) => {
+                                if (seg.type === 'context' && Array.isArray(seg.sourceIndices)) {
+                                    seg.sourceIndices = seg.sourceIndices.map((i) => localToGlobal.get(i) ?? i);
+                                }
+                                if (seg.type === 'quote' && typeof seg.sourceIndex === 'number') {
+                                    seg.sourceIndex = localToGlobal.get(seg.sourceIndex) ?? seg.sourceIndex;
+                                }
+                                interpretiveResponse.segments.push(seg);
+                            });
+                            send('enrichment_complete', { key: def.key, segmentsAdded: parsed.segments.length, sourcesAdded: parsed.sources.length });
+                        }
+                        catch (enrichErr) {
+                            send('enrichment_error', { key: def.key, message: enrichErr?.message || 'enrichment failed' });
+                        }
+                    }
+                    interpretiveResponse.sources = interpretiveResponse.sources
+                        .filter((s, i, self) => self.findIndex((x) => x.url === s.url) === i)
+                        .map((s, i) => ({ ...s, index: i + 1 }));
+                    interpretiveResponse.metadata.segmentCount = interpretiveResponse.segments.length;
+                    interpretiveResponse.metadata.sourceCount = interpretiveResponse.sources.length;
+                    if (enableArtifacts) {
+                        const lower = query.toLowerCase();
+                        const should = ['write code', 'generate script', 'create function', 'analyze data', 'visualize', 'plot', 'chart', 'calculate']
+                            .some(k => lower.includes(k));
+                        if (should) {
+                            const artifact = await artifact_generator_service_1.artifactGeneratorService.generateCodeArtifact({
+                                prompt: query,
+                                language: 'python',
+                                context: interpretiveResponse,
+                            });
+                            interpretiveResponse.artifact = artifact;
+                            send('artifact_generated', { hasArtifact: true });
+                        }
+                    }
+                    send('complete', { requestId, status: 'complete', payload: interpretiveResponse });
+                }
+                catch (err) {
+                    send('error', { requestId, status: 'error', message: err?.message || 'Unknown error' });
+                }
+                return;
+            }
+            if (data.type === 'interpret') {
+                const { query, sessionId: incomingSessionId, documentIds, enableArtifacts, searchSettings } = data.content || {};
+                const wsMessageId = (0, uuid_1.v4)();
+                const sessionIdForWS = incomingSessionId || (0, uuid_1.v4)();
+                streamManager.sendChunk(sessionIdForWS, { type: 'interpret_started', messageId: wsMessageId });
+                try {
+                    const sessionCtx = incomingSessionId ? await sessionState.getItem(incomingSessionId) : null;
+                    let documentContext = [];
+                    if (Array.isArray(documentIds) && documentIds.length > 0) {
+                        documentContext = await document_service_1.documentService.getDocuments(documentIds);
+                    }
+                    const { mode, entities } = await router_service_1.routerService.detectIntent(query);
+                    const groqPrompt = prompt_generator_service_1.promptGeneratorService.generatePrompt(mode, query, entities, {
+                        sessionContext: null,
+                        documentContext,
+                        enableArtifacts,
+                    });
+                    const groqResponse = await groq_service_1.groqService.executeSearch(groqPrompt, { searchSettings });
+                    const interpretiveResponse = response_parser_service_1.responseParserService.parseGroqResponse(groqResponse.content, mode, groqResponse);
+                    streamManager.sendChunk(sessionIdForWS, { type: 'interpret_segment', messageId: wsMessageId, content: { kind: 'hero', data: interpretiveResponse.hero } });
+                    for (const seg of interpretiveResponse.segments) {
+                        streamManager.sendChunk(sessionIdForWS, { type: 'interpret_segment', messageId: wsMessageId, content: { kind: 'segment', data: seg } });
+                    }
+                    streamManager.sendChunk(sessionIdForWS, { type: 'interpret_segment', messageId: wsMessageId, content: { kind: 'sources', data: interpretiveResponse.sources } });
+                    if (enableArtifacts) {
+                        const should = (() => {
+                            const q = String(query || '').toLowerCase();
+                            return ['generate', 'script', 'analyze', 'visualize', 'plot', 'chart', 'calculate'].some(k => q.includes(k));
+                        })();
+                        if (should) {
+                            const artifact = await artifact_generator_service_1.artifactGeneratorService.generateCodeArtifact({
+                                prompt: query,
+                                language: 'python',
+                                context: interpretiveResponse,
+                            });
+                            interpretiveResponse.artifact = artifact;
+                            streamManager.sendChunk(sessionIdForWS, { type: 'interpret_segment', messageId: wsMessageId, content: { kind: 'artifact', data: artifact } });
+                        }
+                    }
+                    streamManager.sendChunk(sessionIdForWS, { type: 'interpret_complete', messageId: wsMessageId, content: interpretiveResponse, isFinal: true });
+                }
+                catch (err) {
+                    streamManager.sendChunk(sessionIdForWS, { type: 'error', messageId: wsMessageId, content: { code: 'INTERPRET_ERROR', message: err?.message || 'Unknown error' }, isFinal: true });
+                }
+                return;
+            }
+            if (data.type === 'interpret_stream' && data.content) {
+                const { query, sessionId: incomingSessionId, documentIds, enableArtifacts, searchSettings } = data.content || {};
+                if (!query || typeof query !== 'string') {
+                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event: 'error', data: { message: 'Query is required' } });
+                    return;
+                }
+                const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+                const startTime = Date.now();
+                const send = (event, dataObj) => {
+                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event, data: dataObj });
+                };
+                try {
+                    send('start', { requestId, status: 'loading' });
+                    const sessionContext = null;
+                    const docCtx = Array.isArray(documentIds) && documentIds.length
+                        ? await document_service_1.documentService.getDocuments(documentIds)
+                        : [];
+                    const { mode, entities } = await router_service_1.routerService.detectIntent(query);
+                    const groqPrompt = prompt_generator_service_1.promptGeneratorService.generatePrompt(mode, query, entities, {
+                        sessionContext,
+                        documentContext: docCtx,
+                        enableArtifacts,
+                    });
+                    let combinedContent = '';
+                    let reasoning = '';
+                    let model = '';
+                    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+                    try {
+                        const stream = groq_service_1.groqService.executeSearchStream(groqPrompt, { searchSettings });
+                        for await (const chunk of stream) {
+                            if (chunk.model)
+                                model = chunk.model;
+                            if ('usage' in chunk && chunk.usage) {
+                                usage = { ...usage, ...chunk.usage };
+                            }
+                            const choice = chunk.choices?.[0];
+                            const delta = choice?.delta ?? {};
+                            if (typeof delta?.content === 'string' && delta.content.length) {
+                                combinedContent += delta.content;
+                                send('token', { chunk: delta.content });
+                            }
+                            if (typeof delta?.reasoning === 'string' && delta.reasoning.length) {
+                                reasoning += delta.reasoning;
+                                send('reasoning', { text: delta.reasoning });
+                            }
+                        }
+                    }
+                    catch (streamErr) {
+                        const resp = await groq_service_1.groqService.executeSearch(groqPrompt, { searchSettings });
+                        combinedContent = resp.content;
+                        model = resp.model;
+                        usage = resp.usage;
+                        reasoning = resp.reasoning || '';
+                    }
+                    let groqResponse = { content: combinedContent, model, usage, reasoning };
+                    let interpretiveResponse;
+                    try {
+                        interpretiveResponse = response_parser_service_1.responseParserService.parseGroqResponse(combinedContent, mode, groqResponse);
+                    }
+                    catch (parseError) {
+                        send('warning', { type: 'parse_error', message: parseError?.message || 'Failed to parse Groq JSON' });
+                        interpretiveResponse = response_parser_service_1.responseParserService.buildFallbackResponse(combinedContent, mode, groqResponse, parseError?.message || 'Failed to parse Groq JSON');
+                    }
+                    interpretiveResponse.metadata.processingTimeMs = Date.now() - startTime;
+                    const enrichmentDefs = [
+                        {
+                            key: 'cultural',
+                            searchSettings: { include_domains: ['*.museum', '*.gallery', '*.art', 'cosmos.co', 'www.metmuseum.org'] }
+                        },
+                        {
+                            key: 'social',
+                            searchSettings: { include_domains: ['*.substack.com', 'www.reddit.com', 'www.threads.net', 'www.tumblr.com'] }
+                        },
+                        {
+                            key: 'visual',
+                            searchSettings: { include_domains: ['cosmos.co', '*.gallery', 'www.metmuseum.org', 'www.moma.org', 'www.wikiart.org'] }
+                        },
+                    ];
+                    for (const def of enrichmentDefs) {
+                        send('enrichment_start', { key: def.key });
+                        try {
+                            const enrichPrompt = prompt_generator_service_1.promptGeneratorService.generateEnrichmentPrompt(def.key, query, entities);
+                            const resp = await groq_service_1.groqService.executeSearch(enrichPrompt, { searchSettings: def.searchSettings });
+                            const parsed = response_parser_service_1.responseParserService.parseEnrichmentResponse(resp.content);
+                            const localToGlobal = new Map();
+                            parsed.sources.forEach((s, idx) => {
+                                const exIndex = interpretiveResponse.sources.findIndex((e) => e.url === s.url);
+                                if (exIndex >= 0) {
+                                    localToGlobal.set(idx + 1, exIndex + 1);
+                                }
+                                else {
+                                    interpretiveResponse.sources.push({ ...s, index: interpretiveResponse.sources.length + 1 });
+                                    localToGlobal.set(idx + 1, interpretiveResponse.sources.length);
+                                }
+                            });
+                            parsed.segments.forEach((seg) => {
+                                if (seg.type === 'context' && Array.isArray(seg.sourceIndices)) {
+                                    seg.sourceIndices = seg.sourceIndices.map((i) => localToGlobal.get(i) ?? i);
+                                }
+                                if (seg.type === 'quote' && typeof seg.sourceIndex === 'number') {
+                                    seg.sourceIndex = localToGlobal.get(seg.sourceIndex) ?? seg.sourceIndex;
+                                }
+                                interpretiveResponse.segments.push(seg);
+                            });
+                            send('enrichment_complete', { key: def.key, segmentsAdded: parsed.segments.length, sourcesAdded: parsed.sources.length });
+                        }
+                        catch (enrichErr) {
+                            send('enrichment_error', { key: def.key, message: enrichErr?.message || 'enrichment failed' });
+                        }
+                    }
+                    interpretiveResponse.sources = interpretiveResponse.sources
+                        .filter((s, i, self) => self.findIndex((x) => x.url === s.url) === i)
+                        .map((s, i) => ({ ...s, index: i + 1 }));
+                    interpretiveResponse.metadata.segmentCount = interpretiveResponse.segments.length;
+                    interpretiveResponse.metadata.sourceCount = interpretiveResponse.sources.length;
+                    if (enableArtifacts) {
+                        const lower = query.toLowerCase();
+                        const should = ['write code', 'generate script', 'create function', 'analyze data', 'visualize', 'plot', 'chart', 'calculate']
+                            .some(k => lower.includes(k));
+                        if (should) {
+                            const artifact = await artifact_generator_service_1.artifactGeneratorService.generateCodeArtifact({
+                                prompt: query,
+                                language: 'python',
+                                context: interpretiveResponse,
+                            });
+                            interpretiveResponse.artifact = artifact;
+                            send('artifact_generated', { hasArtifact: true });
+                        }
+                    }
+                    send('complete', { requestId, status: 'complete', payload: interpretiveResponse });
+                }
+                catch (err) {
+                    send('error', { requestId, status: 'error', message: err?.message || 'Unknown error' });
+                }
+                return;
+            }
         }
         catch (error) {
             logger.error('Fatal error in WebSocket handler', { error: error.message, stack: error.stack, sessionId });
             if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: 'error', content: `Server Error: ${error.message}` }));
+                streamManager.sendChunk(sessionId, { type: 'error', content: `Server Error: ${error.message}` });
             }
         }
     });

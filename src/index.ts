@@ -37,6 +37,7 @@ import { BeatEngine } from './BeatEngine';
 import { DataDependencyService } from './services/data/DataDependencyService';
 import { Resolver } from './services/data/Resolver';
 
+import { sessionService } from './services/session.service';
 import { PlanExecutorService } from './services/PlanExecutorService';
 // Import interpretive search services for WS support
 import { routerService } from './services/router.service';
@@ -50,6 +51,8 @@ import documentsRouter from './routes/documents';
 import exportRouter from './routes/export';
 import interpretRouter from './routes/interpret';
 import sessionsRouter from './routes/sessions';
+import { HistoryService, HistoryItemType } from './services/HistoryService';
+import historyRouter from './routes/history';
 
 // --- Logger Setup ---
 const logger = winston.createLogger({
@@ -69,6 +72,7 @@ const followUpService = new FollowUpService(groqClient, CONFIG.MODEL_NAME, CONFI
 const toolOrchestrator = new ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
 const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager);
 const beatEngine = new BeatEngine(toolConfigManager);
+const historyService = new HistoryService(redis);
 
 const conversationService = new ConversationService({
     groqApiKey: CONFIG.GROQ_API_KEY,
@@ -87,7 +91,7 @@ const actionLauncherService = new ActionLauncherService(
     beatEngine,
 );
 
-const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService);
+const planExecutorService = new PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService, historyService);
 
 // --- Session State Management ---
 interface SessionState {
@@ -97,6 +101,7 @@ interface SessionState {
 const sessionState: storage.LocalStorage = storage.create({ dir: 'sessions' });
 (async () => {
     await sessionState.init();
+    await sessionService.init();
     logger.info('Persistent session storage initialized.');
 })();
 
@@ -127,6 +132,8 @@ app.use('/api/documents', documentsRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/interpret', interpretRouter);
 app.use('/api/sessions', sessionsRouter);
+app.locals.historyService = historyService;
+app.use('/history', historyRouter);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -150,6 +157,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     streamManager.addConnection(sessionId, ws);
     logger.info('Client connected', { sessionId });
 
+    // Send session configuration to the client
+    const sessionConfig = {
+        sessionId: sessionId,
+        tools: toolConfigManager.getToolDefinitionsForPlanner(),
+    };
+    streamManager.sendChunk(sessionId, {
+        type: 'session_init',
+        content: sessionConfig
+    } as unknown as StreamChunk);
+
+    // Send connection confirmation to the client
+    streamManager.sendChunk(sessionId, { type: 'connection_ack', content: { sessionId } } as unknown as StreamChunk);
+
     ws.on('message', async (message: string) => {
     try {
         const data = JSON.parse(message);
@@ -161,7 +181,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const decodedToken = await firebaseAdminAuth.verifyIdToken(data.idToken);
         userId = decodedToken.uid;
         await sessionState.setItem(sessionId, { userId });
-        ws.send(JSON.stringify({ type: 'auth_success' })); // ✅ Direct send
+        streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } } as unknown as StreamChunk);
         logger.info('Client authenticated', { userId, sessionId });
 
         // Warm connections
@@ -178,7 +198,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // Handle unauthenticated session for development/testing
         userId = `unauthenticated-user-${uuidv4()}`;
         await sessionState.setItem(sessionId, { userId });
-        ws.send(JSON.stringify({ type: 'auth_success', content: { userId } })); // ✅ Direct send
+        streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } } as unknown as StreamChunk);
         logger.info('Unauthenticated session created', { userId, sessionId });
     }
     return;
@@ -339,6 +359,26 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 isFinal: true,
             } as StreamChunk);
 
+            try {
+                const planTitle = `Rerun: ${savedPlan.length} actions`;
+                const actions = savedPlan.map((step: any) => ({
+                    toolName: step.toolName,
+                    description: step.description
+                }));
+                
+                const historyId = await historyService.recordPlanCreation(
+                    userId,
+                    sessionId,
+                    run.id,
+                    planTitle,
+                    actions
+                );
+                
+                (run as any).historyId = historyId;
+            } catch (error: any) {
+                logger.warn('Failed to record rerun in history', { error: error.message });
+            }
+
             // 5. Process the new action plan to store it and determine next steps
             await actionLauncherService.processActionPlan(
                 newActionPlan,
@@ -405,6 +445,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             const messageId = uuidv4();
             logger.info('Processing user message', { sessionId, userId, messageId });
 
+            try {
+                await historyService.recordUserMessage(userId, sessionId, data.content);
+            } catch (error: any) {
+                logger.warn('Failed to record user message in history', { error: error.message });
+            }
+
             const processedResult = await conversationService.processMessageAndAggregateResults(
                 data.content,
                 sessionId,
@@ -444,6 +490,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 if (actionPlan && actionPlan.length > 0) {
                     await actionLauncherService.processActionPlan(actionPlan, sessionId, userId, messageId, toolOrchestrator, run);
                     
+                    try {
+                        const planTitle = data.content.substring(0, 100); // Use first 100 chars of request
+                        const actions = actionPlan.map(step => ({
+                            toolName: step.tool,
+                            description: step.intent
+                        }));
+                        
+                        const historyId = await historyService.recordPlanCreation(
+                            userId,
+                            sessionId,
+                            run.id,
+                            planTitle,
+                            actions
+                        );
+                        
+                        (run as any).historyId = historyId;
+                        logger.info('Plan recorded in history', { sessionId, historyId, planId: run.id });
+                    } catch (error: any) {
+                        logger.warn('Failed to record plan in history', { error: error.message });
+                    }
+
                     const actions = actionLauncherService.getActiveActions(sessionId);
                     const needsUserInput = actions.some(a => a.status === 'collecting_parameters');
 
@@ -647,6 +714,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
                 if (finalResponseResult.conversationalResponse?.trim()) {
                     await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);
+
+                    try {
+                        await historyService.recordAssistantMessage(
+                            userId,
+                            sessionId,
+                            finalResponseResult.conversationalResponse
+                        );
+                    } catch (error: any) {
+                        logger.warn('Failed to record assistant message', { error: error.message });
+                    }
+                    
                     finalRunState.assistantResponse = finalResponseResult.conversationalResponse; // Mark that response was generated
                     await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
                 }

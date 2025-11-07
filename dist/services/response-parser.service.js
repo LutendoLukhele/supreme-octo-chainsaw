@@ -3,17 +3,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.responseParserService = exports.ResponseParserService = void 0;
 class ResponseParserService {
     parseGroqResponse(groqContent, mode, groqResponse) {
-        let parsed;
-        try {
-            parsed = JSON.parse(groqContent);
-        }
-        catch (error) {
-            throw new Error(`Failed to parse Groq response: ${error?.message ?? 'Invalid JSON'}`);
-        }
-        const hero = this.buildHero(parsed.hero);
-        const segments = this.buildSegments(parsed.narrative ?? []);
-        const sources = this.buildSources(parsed.sources ?? []);
-        const metadata = this.buildMetadata(mode, parsed, groqResponse);
+        const { payload, parseStatus } = this.prepareGroqPayload(groqContent);
+        const hero = this.buildHero(payload.hero);
+        const segments = this.buildSegments(payload.narrative ?? []);
+        const sources = this.buildSources(payload.sources ?? []);
+        const metadata = this.buildMetadata(mode, payload, groqResponse, parseStatus);
         return {
             id: this.generateId(),
             mode,
@@ -23,15 +17,15 @@ class ResponseParserService {
             segments,
             sources,
             metadata,
-            artifact: parsed.artifact ?? undefined,
+            artifact: payload.artifact ?? undefined,
         };
     }
     parseEnrichmentResponse(content) {
         try {
-            const parsed = JSON.parse(content ?? '{}');
-            const segments = this.buildSegments(parsed.segments ?? []);
-            const sources = this.buildSources(parsed.sources ?? []);
-            const imageCandidates = (parsed.imageCandidates ?? [])
+            const { payload } = this.prepareGroqPayload(content ?? '{}');
+            const segments = this.buildSegments(payload.segments ?? []);
+            const sources = this.buildSources(payload.sources ?? []);
+            const imageCandidates = (payload.imageCandidates ?? [])
                 .filter((candidate) => typeof candidate?.url === 'string' && candidate.url.trim().length > 0)
                 .map((candidate) => ({
                 url: candidate.url,
@@ -53,6 +47,46 @@ class ResponseParserService {
         catch (error) {
             throw new Error(`Failed to parse enrichment response: ${error?.message ?? 'Invalid JSON'}`);
         }
+    }
+    buildFallbackResponse(rawContent, mode, groqResponse, reason) {
+        const metadata = this.buildMetadata(mode, {}, groqResponse, 'fallback');
+        metadata.researchNotes = {
+            ...(metadata.researchNotes ?? {}),
+            baseReasoning: groqResponse.reasoning,
+            enrichment: {
+                ...(metadata.researchNotes?.enrichment ?? {}),
+                parseFallback: reason,
+            },
+        };
+        return {
+            id: this.generateId(),
+            mode,
+            status: 'complete',
+            timestamp: new Date().toISOString(),
+            hero: {
+                headline: 'Unable to parse Groq response',
+                subheadline: reason,
+                imageUrl: null,
+                imageSource: null,
+                imageCandidates: [],
+            },
+            segments: [
+                {
+                    type: 'text',
+                    text: rawContent.trim().length > 0
+                        ? `Raw Groq output:\n${rawContent.trim()}`
+                        : 'Groq returned an empty payload.',
+                },
+            ],
+            sources: [],
+            metadata: {
+                ...metadata,
+                segmentCount: 1,
+                sourceCount: 0,
+                groqParseStatus: 'fallback',
+            },
+            artifact: undefined,
+        };
     }
     buildHero(heroData) {
         return {
@@ -129,7 +163,7 @@ class ResponseParserService {
             relevanceScore: source.relevanceScore ?? 0.5,
         }));
     }
-    buildMetadata(mode, parsed, groqResponse) {
+    buildMetadata(mode, parsed, groqResponse, parseStatus) {
         return {
             mode,
             processingTimeMs: 0,
@@ -143,6 +177,7 @@ class ResponseParserService {
             },
             groqReasoning: groqResponse.reasoning,
             groqExecutedTools: groqResponse.executedTools,
+            groqParseStatus: parseStatus,
         };
     }
     extractDomain(url) {
@@ -156,6 +191,64 @@ class ResponseParserService {
     }
     generateId() {
         return `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    }
+    prepareGroqPayload(rawContent) {
+        const cleaned = this.stripCodeFences(rawContent);
+        const candidate = this.extractJsonObject(cleaned);
+        let parseStatus = candidate.modified ? 'repaired' : 'ok';
+        try {
+            const parsed = JSON.parse(candidate.content);
+            this.assertInterpretiveShape(parsed);
+            if (parseStatus === 'ok' && candidate.modified) {
+                parseStatus = 'repaired';
+            }
+            return {
+                payload: parsed,
+                parseStatus,
+            };
+        }
+        catch (error) {
+            const message = error?.message ?? 'Invalid JSON';
+            throw new Error(`Failed to parse Groq response: ${message}`);
+        }
+    }
+    stripCodeFences(content) {
+        const trimmed = content.trim();
+        if (trimmed.startsWith('```')) {
+            const fenceMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+            if (fenceMatch) {
+                return fenceMatch[1];
+            }
+        }
+        return trimmed;
+    }
+    extractJsonObject(content) {
+        const firstBrace = content.indexOf('{');
+        const lastBrace = content.lastIndexOf('}');
+        if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+            return { content, modified: false };
+        }
+        if (firstBrace !== 0 || lastBrace !== content.length - 1) {
+            return {
+                content: content.slice(firstBrace, lastBrace + 1),
+                modified: true,
+            };
+        }
+        return { content, modified: false };
+    }
+    assertInterpretiveShape(parsed) {
+        if (!parsed || typeof parsed !== 'object') {
+            throw new Error('Interpretive payload must be a JSON object.');
+        }
+        if (parsed.hero && typeof parsed.hero !== 'object') {
+            throw new Error('Interpretive payload hero must be an object.');
+        }
+        if (parsed.narrative && !Array.isArray(parsed.narrative)) {
+            throw new Error('Interpretive payload narrative must be an array.');
+        }
+        if (parsed.sources && !Array.isArray(parsed.sources)) {
+            throw new Error('Interpretive payload sources must be an array.');
+        }
     }
 }
 exports.ResponseParserService = ResponseParserService;

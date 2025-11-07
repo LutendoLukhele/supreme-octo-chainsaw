@@ -1,13 +1,25 @@
 // src/services/session.service.ts
 
 import { v4 as uuidv4 } from 'uuid';
+import * as storage from 'node-persist';
 import { Session, Message, SessionMetadata } from '../models/session.model';
 import { InterpretiveResponse } from '../models/interpretive.model';
 import { Document } from '../models/document.model';
 import { Artifact } from '../models/artifact.model';
 
 export class SessionService {
-    private sessions: Map<string, Session> = new Map();
+    private storage: storage.LocalStorage;
+
+    constructor() {
+        this.storage = storage.create({
+            dir: '.data/sessions',
+            ttl: false,
+        });
+    }
+
+    public async init() {
+        await this.storage.init();
+    }
 
     public async createSession(userId: string, initialQuery?: string): Promise<Session> {
         const sessionId = this.generateId();
@@ -25,28 +37,28 @@ export class SessionService {
             metadata: this.createInitialMetadata(),
         };
 
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
 
     public async getSession(sessionId: string): Promise<Session | null> {
-        return this.sessions.get(sessionId) ?? null;
+        return (await this.storage.getItem(sessionId)) ?? null;
     }
 
     public async getUserSessions(userId: string): Promise<Session[]> {
-        return Array.from(this.sessions.values())
+        const sessions: Session[] = await this.storage.values();
+        return sessions
             .filter((session) => session.userId === userId)
-            .sort((a, b) => b.lastAccessedAt.getTime() - a.lastAccessedAt.getTime());
+            .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
     }
 
     public async updateSession(sessionId: string, updates: Partial<Session>): Promise<Session> {
         const session = await this.getSession(sessionId);
         if (!session) throw new Error('Session not found');
 
-        Object.assign(session, updates);
-        session.lastAccessedAt = new Date();
-        this.sessions.set(sessionId, session);
-        return session;
+        const updatedSession = { ...session, ...updates, lastAccessedAt: new Date() };
+        await this.storage.setItem(sessionId, updatedSession);
+        return updatedSession;
     }
 
     public async addMessage(
@@ -67,7 +79,7 @@ export class SessionService {
         session.metadata.topics = this.extractTopics(session.messages);
         session.lastAccessedAt = new Date();
 
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
 
@@ -82,7 +94,7 @@ export class SessionService {
         session.metadata.mode = result.mode;
         session.metadata.totalTokens += result.metadata?.groqTokens?.total ?? 0;
 
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
 
@@ -93,7 +105,7 @@ export class SessionService {
         session.uploadedDocuments.push(document);
         session.metadata.documentCount = session.uploadedDocuments.length;
 
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
 
@@ -104,12 +116,12 @@ export class SessionService {
         session.generatedArtifacts.push(artifact);
         session.metadata.artifactCount = session.generatedArtifacts.length;
 
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
 
-    public async deleteSession(sessionId: string): Promise<boolean> {
-        return this.sessions.delete(sessionId);
+    public async deleteSession(sessionId: string): Promise<void> {
+        await this.storage.removeItem(sessionId);
     }
 
     private createInitialMetadata(): SessionMetadata {

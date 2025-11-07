@@ -8,6 +8,8 @@ import Groq from 'groq-sdk';
 import { ActionStep, PlannerService } from './PlannerService';
 import { FollowUpService } from './FollowUpService';
 
+import { HistoryService } from './HistoryService';
+
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
@@ -22,7 +24,8 @@ export class PlanExecutorService {
     private toolConfigManager: ToolConfigManager,
     private groqClient: Groq,
     private plannerService: PlannerService,
-    private followUpService: FollowUpService
+    private followUpService: FollowUpService,
+    private historyService: HistoryService
   ) {}
 
   private _get(obj: any, path: string, defaultValue: any = undefined) {
@@ -293,6 +296,22 @@ Output ONLY valid JSON with corrected arguments. No explanation.`;
           if (completedAction.status === 'failed') {
             logger.error('Step failed', { stepId: step.stepId, error: completedAction.error });
             run.status = 'failed';
+
+            try {
+              await this.historyService.recordToolCall(
+                userId,
+                run.sessionId,
+                step.toolCall.name,
+                `Failed: ${completedAction.error || 'Unknown error'}`,
+                step.toolCall.arguments,
+                null,
+                'failed',
+                step.stepId,
+                run.id
+              );
+            } catch (error: any) {
+              logger.warn('Failed to record failed tool call', { error: error.message });
+            }
             
             const failureStep: ActionStep = {
               id: step.stepId,
@@ -315,6 +334,29 @@ Output ONLY valid JSON with corrected arguments. No explanation.`;
             });
             this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
             return run;
+          }
+
+          try {
+            await this.historyService.recordToolCall(
+              userId,
+              run.sessionId,
+              step.toolCall.name,
+              `Executed ${step.toolCall.name}`,
+              step.toolCall.arguments,
+              completedAction.result,
+              'success',
+              step.stepId,
+              run.id
+            );
+            logger.info('Tool execution recorded in history', { 
+              stepId: step.stepId, 
+              tool: step.toolCall.name 
+            });
+          } catch (error: any) {
+            logger.warn('Failed to record tool call in history', { 
+              error: error.message,
+              stepId: step.stepId 
+            });
           }
 
           // Generate completion message
@@ -439,6 +481,28 @@ Output ONLY valid JSON with corrected arguments. No explanation.`;
     logger.info('Plan execution completed', { runId: run.id });
     run.status = 'completed';
     run.completedAt = new Date().toISOString();
+
+    if ((run as any).historyId) {
+      try {
+        await this.historyService.updateHistoryItem(
+          userId,
+          (run as any).historyId,
+          {
+            status: 'completed',
+          } as any
+        );
+        logger.info('Plan status updated in history', { 
+          runId: run.id, 
+          historyId: (run as any).historyId 
+        });
+      } catch (error: any) {
+        logger.warn('Failed to update plan status in history', { 
+          error: error.message,
+          runId: run.id 
+        });
+      }
+    }
+
     this.streamManager.sendChunk(run.sessionId, { type: 'run_updated', content: run });
     return run;
   }

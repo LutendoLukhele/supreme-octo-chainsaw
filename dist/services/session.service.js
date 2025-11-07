@@ -1,10 +1,50 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sessionService = exports.SessionService = void 0;
 const uuid_1 = require("uuid");
+const storage = __importStar(require("node-persist"));
 class SessionService {
     constructor() {
-        this.sessions = new Map();
+        this.storage = storage.create({
+            dir: '.data/sessions',
+            ttl: false,
+        });
+    }
+    async init() {
+        await this.storage.init();
     }
     async createSession(userId, initialQuery) {
         const sessionId = this.generateId();
@@ -20,25 +60,25 @@ class SessionService {
             generatedArtifacts: [],
             metadata: this.createInitialMetadata(),
         };
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
     async getSession(sessionId) {
-        return this.sessions.get(sessionId) ?? null;
+        return (await this.storage.getItem(sessionId)) ?? null;
     }
     async getUserSessions(userId) {
-        return Array.from(this.sessions.values())
+        const sessions = await this.storage.values();
+        return sessions
             .filter((session) => session.userId === userId)
-            .sort((a, b) => b.lastAccessedAt.getTime() - a.lastAccessedAt.getTime());
+            .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
     }
     async updateSession(sessionId, updates) {
         const session = await this.getSession(sessionId);
         if (!session)
             throw new Error('Session not found');
-        Object.assign(session, updates);
-        session.lastAccessedAt = new Date();
-        this.sessions.set(sessionId, session);
-        return session;
+        const updatedSession = { ...session, ...updates, lastAccessedAt: new Date() };
+        await this.storage.setItem(sessionId, updatedSession);
+        return updatedSession;
     }
     async addMessage(sessionId, message) {
         const session = await this.getSession(sessionId);
@@ -53,7 +93,7 @@ class SessionService {
         session.metadata.messageCount = session.messages.length;
         session.metadata.topics = this.extractTopics(session.messages);
         session.lastAccessedAt = new Date();
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
     async addInterpretiveResult(sessionId, result) {
@@ -63,7 +103,7 @@ class SessionService {
         session.lastInterpretiveResult = result;
         session.metadata.mode = result.mode;
         session.metadata.totalTokens += result.metadata?.groqTokens?.total ?? 0;
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
     async addDocument(sessionId, document) {
@@ -72,7 +112,7 @@ class SessionService {
             throw new Error('Session not found');
         session.uploadedDocuments.push(document);
         session.metadata.documentCount = session.uploadedDocuments.length;
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
     async addArtifact(sessionId, artifact) {
@@ -81,11 +121,11 @@ class SessionService {
             throw new Error('Session not found');
         session.generatedArtifacts.push(artifact);
         session.metadata.artifactCount = session.generatedArtifacts.length;
-        this.sessions.set(sessionId, session);
+        await this.storage.setItem(sessionId, session);
         return session;
     }
     async deleteSession(sessionId) {
-        return this.sessions.delete(sessionId);
+        await this.storage.removeItem(sessionId);
     }
     createInitialMetadata() {
         return {

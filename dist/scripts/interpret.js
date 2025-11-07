@@ -1,6 +1,6 @@
 "use strict";
 function parseArgs(argv) {
-    const args = { host: 'http://localhost:3000', query: '', include: [], exclude: [], country: undefined };
+    const args = { host: 'http://localhost:8080', query: '', include: [], exclude: [], country: undefined };
     const rest = [];
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];

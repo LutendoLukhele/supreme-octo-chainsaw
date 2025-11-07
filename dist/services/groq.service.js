@@ -16,7 +16,7 @@ class GroqService {
     async executeSearch(prompt, options = {}) {
         try {
             const response = await this.client.chat.completions.create({
-                model: process.env.GROQ_MODEL ?? 'compound-beta-mini',
+                model: process.env.GROQ_MODEL ?? 'groq/compound',
                 messages: [
                     {
                         role: 'user',
@@ -34,6 +34,28 @@ class GroqService {
                 executedTools: response.choices[0].message?.tool_calls,
                 reasoning: response.choices[0]?.message?.reasoning,
             };
+        }
+        catch (error) {
+            throw new Error(`Groq API error: ${error?.message ?? 'Unknown error'}`);
+        }
+    }
+    async *executeSearchStream(prompt, options = {}) {
+        try {
+            const stream = await this.client.chat.completions.create({
+                model: process.env.GROQ_MODEL ?? 'groq/compound',
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt,
+                    },
+                ],
+                temperature: 0.7,
+                stream: true,
+                ...(options.searchSettings ? { search_settings: options.searchSettings } : {}),
+            });
+            for await (const chunk of stream) {
+                yield chunk;
+            }
         }
         catch (error) {
             throw new Error(`Groq API error: ${error?.message ?? 'Unknown error'}`);

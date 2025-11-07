@@ -4,23 +4,45 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PlannerService = void 0;
-const openai_1 = require("openai");
+const dedicatedPlannerPrompt_1 = require("./conversation/prompts/dedicatedPlannerPrompt");
+const groq_sdk_1 = __importDefault(require("groq-sdk"));
 const uuid_1 = require("uuid");
 const winston_1 = __importDefault(require("winston"));
 const events_1 = require("events");
 const types_1 = require("./conversation/types");
-const dedicatedPlannerPrompt_1 = require("./conversation/prompts/dedicatedPlannerPrompt");
 const logger = winston_1.default.createLogger({
     level: 'info',
     format: winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.json()),
     transports: [new winston_1.default.transports.Console()],
 });
 class PlannerService extends events_1.EventEmitter {
-    constructor(openaiApiKey, maxTokens, toolConfigManager) {
+    constructor(groqApiKey, maxTokens, toolConfigManager) {
         super();
-        this.openaiClient = new openai_1.OpenAI({ apiKey: openaiApiKey });
+        logger.info('PlannerService constructor called', {
+            apiKeyProvided: !!groqApiKey,
+            apiKeyLength: groqApiKey?.length || 0,
+            apiKeyPrefix: groqApiKey?.substring(0, 10) || 'NONE',
+            apiKeyType: typeof groqApiKey
+        });
+        if (!groqApiKey || groqApiKey.trim() === '') {
+            throw new Error('GROQ_API_KEY is required but was not provided');
+        }
+        if (!groqApiKey.startsWith('gsk_')) {
+            logger.error('Invalid Groq API key format - must start with gsk_', {
+                receivedPrefix: groqApiKey.substring(0, 4)
+            });
+            throw new Error('Invalid Groq API key format - must start with gsk_');
+        }
+        this.groqClient = new groq_sdk_1.default({
+            apiKey: groqApiKey.trim()
+        });
         this.maxTokens = maxTokens;
         this.toolConfigManager = toolConfigManager;
+        logger.info('PlannerService initialized with Groq', {
+            model: PlannerService.MODEL,
+            maxTokens,
+            apiKeyValid: true
+        });
     }
     async generatePlanWithStepAnnouncements(userInput, toolCalls, sessionId, messageId) {
         const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId);
@@ -48,7 +70,7 @@ Be specific but concise. Example: "I'll fetch your recent emails and then create
                 messageId: summaryMessageId,
                 messageType: types_1.MessageType.PLAN_SUMMARY
             });
-            const response = await this.openaiClient.chat.completions.create({
+            const response = await this.groqClient.chat.completions.create({
                 model: PlannerService.MODEL,
                 messages: [{ role: 'system', content: summaryPrompt }],
                 max_tokens: 100,
@@ -84,14 +106,18 @@ Be specific but concise. Example: "I'll fetch your recent emails and then create
             logger.error('Failed to generate plan summary', { error, sessionId });
         }
     }
-    async streamStepAnnouncement(step, sessionId) {
+    async streamStepAnnouncement(step, sessionId, placeholdersResolved = false) {
         const stepMessageId = (0, uuid_1.v4)();
         const totalSteps = step.totalSteps ?? 1;
         const stepPrefix = totalSteps > 1
             ? `Step ${step.stepNumber} of ${totalSteps}: `
             : '';
+        const dataResolutionMessage = placeholdersResolved
+            ? `I've used the results from the previous step to prepare the arguments. `
+            : '';
         const announcementPrompt = `Generate a brief, specific action announcement (max 25 words).
 ${stepPrefix}Executing: ${step.tool}
+${dataResolutionMessage}
 Intent: ${step.intent}
 Key parameters: ${JSON.stringify(step.arguments, null, 2).slice(0, 200)}
 
@@ -104,7 +130,7 @@ Be specific about what's being done.`;
                 messageType: types_1.MessageType.STEP_ANNOUNCEMENT,
                 metadata: { stepNumber: step.stepNumber, totalSteps: step.totalSteps }
             });
-            const response = await this.openaiClient.chat.completions.create({
+            const response = await this.groqClient.chat.completions.create({
                 model: PlannerService.MODEL,
                 messages: [{ role: 'system', content: announcementPrompt }],
                 max_tokens: 80,
@@ -138,14 +164,6 @@ Be specific about what's being done.`;
             const fallbackText = `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`;
             this.streamSimpleMessage(sessionId, stepMessageId, fallbackText, types_1.MessageType.STEP_ANNOUNCEMENT);
         }
-        const plannerStatus = {
-            type: 'planner_status',
-            content: `${stepPrefix}Executing ${this.getToolFriendlyName(step.tool)}...`,
-            messageId: stepMessageId,
-            streamType: 'planner_feedback',
-            isFinal: true,
-        };
-        return plannerStatus;
     }
     async streamStepCompletion(step, result, sessionId) {
         const completionMessageId = (0, uuid_1.v4)();
@@ -160,7 +178,7 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
                 messageId: completionMessageId,
                 messageType: types_1.MessageType.STEP_COMPLETE
             });
-            const response = await this.openaiClient.chat.completions.create({
+            const response = await this.groqClient.chat.completions.create({
                 model: PlannerService.MODEL,
                 messages: [{ role: 'system', content: completionPrompt }],
                 max_tokens: 60,
@@ -195,6 +213,56 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
             this.streamSimpleMessage(sessionId, completionMessageId, fallbackText, types_1.MessageType.STEP_COMPLETE);
         }
     }
+    async streamSingleActionAnnouncement(step, sessionId) {
+        const messageId = (0, uuid_1.v4)();
+        const announcementPrompt = `Generate a brief, specific action announcement (max 25 words) for a single action.
+Executing: ${step.tool}
+Intent: ${step.intent}
+Key parameters: ${JSON.stringify(step.arguments, null, 2).slice(0, 200)}
+
+Be specific about what's being done. Example: "Okay, sending an email to John Doe."`;
+        try {
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'START_STREAM' },
+                messageId: messageId,
+                messageType: types_1.MessageType.TOOL_EXECUTION,
+            });
+            const response = await this.groqClient.chat.completions.create({
+                model: PlannerService.MODEL,
+                messages: [{ role: 'system', content: announcementPrompt }],
+                max_tokens: 80,
+                stream: true,
+                temperature: 0.5,
+            });
+            for await (const chunk of response) {
+                const content = chunk.choices[0]?.delta?.content;
+                if (content) {
+                    this.emit('send_chunk', sessionId, {
+                        type: 'conversational_text_segment',
+                        content: {
+                            status: 'STREAMING',
+                            segment: { segment: content, styles: [], type: 'text' }
+                        },
+                        messageId: messageId,
+                        messageType: types_1.MessageType.TOOL_EXECUTION
+                    });
+                }
+            }
+            this.emit('send_chunk', sessionId, {
+                type: 'conversational_text_segment',
+                content: { status: 'END_STREAM' },
+                messageId: messageId,
+                isFinal: true,
+                messageType: types_1.MessageType.TOOL_EXECUTION
+            });
+        }
+        catch (error) {
+            logger.error('Failed to generate single action announcement', { error, sessionId });
+            const fallbackText = `Executing ${this.getToolFriendlyName(step.tool)}...`;
+            this.streamSimpleMessage(sessionId, messageId, fallbackText, types_1.MessageType.TOOL_EXECUTION);
+        }
+    }
     streamSimpleMessage(sessionId, messageId, text, messageType) {
         this.emit('send_chunk', sessionId, {
             type: 'conversational_text_segment',
@@ -227,7 +295,7 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
         return friendlyNames[toolName] || toolName.replace(/_/g, ' ');
     }
     async generatePlan(userInput, identifiedToolCalls, sessionId, clientMessageId) {
-        logger.info('PlannerService: Generating action plan', {
+        logger.info('PlannerService: Generating action plan using structured output', {
             sessionId,
             userInputLength: userInput.length,
             numIdentifiedTools: identifiedToolCalls.length,
@@ -254,40 +322,63 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
             .replace('{{USER_CURRENT_MESSAGE}}', userInput)
             .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
             .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+        logger.info('PlannerService: Constructed system prompt for planner', {
+            sessionId,
+            availableToolNames: availableTools.map(t => t.name),
+        });
         const messagesForApi = [
-            { role: 'system', content: systemPromptContent }
+            { role: 'system', content: systemPromptContent },
+            { role: 'user', content: userInput }
         ];
-        let accumulatedContent = "";
         try {
-            const responseStream = await this.openaiClient.chat.completions.create({
+            const response = await this.groqClient.chat.completions.create({
                 model: PlannerService.MODEL,
                 messages: messagesForApi,
                 max_tokens: this.maxTokens,
                 temperature: 0.1,
                 response_format: { type: "json_object" },
-                stream: true,
             });
-            for await (const chunk of responseStream) {
-                const contentDelta = chunk.choices[0]?.delta?.content;
-                if (contentDelta)
-                    accumulatedContent += contentDelta;
-                if (chunk.choices[0]?.finish_reason)
-                    break;
-            }
-            if (!accumulatedContent) {
+            const content = response.choices[0]?.message?.content;
+            if (!content) {
                 logger.error('PlannerService: No content from planning LLM', { sessionId });
                 throw new Error('No content from planning LLM');
             }
-            const responseObject = JSON.parse(accumulatedContent);
+            const responseObject = JSON.parse(content);
+            logger.info('PlannerService: Raw plan from LLM', {
+                sessionId,
+                planObject: JSON.stringify(responseObject, null, 2)
+            });
             if (!responseObject.plan || !Array.isArray(responseObject.plan)) {
-                logger.error('PlannerService: Invalid response format', {
+                logger.error('PlannerService: Invalid response format from structured output', {
                     sessionId,
                     responseObject: JSON.stringify(responseObject)
                 });
-                throw new Error('Planner LLM response is not in the expected format.');
+                throw new Error('Planner LLM response is not in the expected format despite using json_schema.');
+            }
+            const availableToolNames = new Set(availableTools.map(t => t.name));
+            const invalidTools = [];
+            responseObject.plan.forEach((item, idx) => {
+                if (!availableToolNames.has(item.tool)) {
+                    invalidTools.push(item.tool);
+                    logger.error('PlannerService: Invalid tool in plan', {
+                        sessionId,
+                        stepNumber: idx + 1,
+                        invalidTool: item.tool,
+                        availableTools: Array.from(availableToolNames)
+                    });
+                }
+            });
+            if (invalidTools.length > 0) {
+                const errorMsg = `Plan contains invalid tools: ${invalidTools.join(', ')}. Available tools: ${Array.from(availableToolNames).join(', ')}`;
+                logger.error('PlannerService: Plan validation failed', {
+                    sessionId,
+                    invalidTools,
+                    availableTools: Array.from(availableToolNames)
+                });
+                throw new Error(errorMsg);
             }
             const actionPlan = responseObject.plan.map((item, idx) => {
-                const actionId = (0, uuid_1.v4)();
+                const actionId = item.id || (0, uuid_1.v4)();
                 logger.info('PlannerService: Creating action step', {
                     sessionId,
                     stepNumber: idx + 1,
@@ -306,11 +397,10 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
                     totalSteps: responseObject.plan.length
                 };
             });
-            logger.info('PlannerService: Complete plan with all IDs', {
+            logger.info('PlannerService: Complete plan with validated tools', {
                 sessionId,
                 planLength: actionPlan.length,
                 actionIds: actionPlan.map(step => ({ id: step.id, tool: step.tool })),
-                fullPlan: JSON.stringify(actionPlan, null, 2)
             });
             this.emit('send_chunk', sessionId, {
                 type: 'plan_generated',
@@ -328,7 +418,6 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
             logger.error('PlannerService: Error generating action plan', {
                 error: error.message,
                 errorStack: error.stack,
-                accumulatedContent: accumulatedContent?.substring(0, 1000),
                 sessionId
             });
             return [];
@@ -336,4 +425,4 @@ Result summary: ${JSON.stringify(result).slice(0, 300)}`;
     }
 }
 exports.PlannerService = PlannerService;
-PlannerService.MODEL = 'gpt-4o-mini';
+PlannerService.MODEL = 'llama-3.3-70b-versatile';

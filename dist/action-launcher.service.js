@@ -21,7 +21,7 @@ class ActionLauncherService extends events_1.EventEmitter {
         this.activeActions = new Map();
         logger.info("ActionLauncherService initialized.");
     }
-    async processActionPlan(actionPlan, sessionId, userId, messageId, activeRun) {
+    async processActionPlan(actionPlan, sessionId, userId, messageId, toolOrchestrator, activeRun) {
         logger.info('ActionLauncher: Processing action plan', {
             sessionId,
             numItems: actionPlan.length,
@@ -64,13 +64,15 @@ class ActionLauncherService extends events_1.EventEmitter {
                 clientActionsNeedingParams.push(newActiveAction);
             }
             else if (serverDeterminedStatus === 'ready') {
-                clientActionsToConfirm.push(newActiveAction);
+                const toolSchema = this.toolConfigManager.getToolInputSchema(toolName);
+                const hasParams = toolSchema?.properties && Object.keys(toolSchema.properties).length > 0;
+                if (hasParams) {
+                    if (actionPlan.length > 1) {
+                        clientActionsToConfirm.push(newActiveAction);
+                    }
+                }
             }
         }
-        logger.info('ActionLauncher: All actions stored', {
-            sessionId,
-            storedActionIds: this.getActiveActions(sessionId).map(a => ({ id: a.id, tool: a.toolName }))
-        });
         if (clientActionsNeedingParams.length > 0) {
             const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;
             this.emit('send_chunk', sessionId, {
@@ -237,10 +239,11 @@ class ActionLauncherService extends events_1.EventEmitter {
             action.result = result.data;
             action.status = result.status === 'success' ? 'completed' : 'failed';
             action.error = result.status === 'failed' ? result.error : undefined;
-            logger.info('ActionLauncher: Action completed', {
+            logger.info('ActionLauncher: Action completed with result', {
                 sessionId,
                 actionId,
-                status: action.status
+                status: action.status,
+                result: JSON.stringify(action.result, null, 2)
             });
             return action;
         }
@@ -257,8 +260,12 @@ class ActionLauncherService extends events_1.EventEmitter {
         }
     }
     getActiveActions(sessionId) {
-        const sessionActionMap = this.activeActions.get(sessionId);
-        return sessionActionMap ? Array.from(sessionActionMap.values()) : [];
+        const sessionActions = this.activeActions.get(sessionId);
+        return sessionActions ? Array.from(sessionActions.values()) : [];
+    }
+    clearActiveActions(sessionId) {
+        this.activeActions.delete(sessionId);
+        logger.info('Cleared active actions for session', { sessionId });
     }
     getAction(sessionId, actionId) {
         return this.activeActions.get(sessionId)?.get(actionId) || null;

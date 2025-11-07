@@ -5,56 +5,57 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FollowUpService = void 0;
 const winston_1 = __importDefault(require("winston"));
+const followUpPrompt_1 = require("./followUpPrompt");
+const ToolConfigManager_1 = require("./tool/ToolConfigManager");
 const logger = winston_1.default.createLogger({
     level: 'info',
     format: winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.json()),
     transports: [new winston_1.default.transports.Console()],
 });
 class FollowUpService {
-    constructor(client, model, maxTokens, toolConfigManager) {
+    constructor(client, model, maxTokens) {
         this.client = client;
         this.model = model;
         this.maxTokens = maxTokens;
-        this.toolConfigManager = toolConfigManager;
+        this.toolConfigManager = new ToolConfigManager_1.ToolConfigManager();
     }
-    async generateFollowUp(run, sessionId, messageId) {
-        const lastStep = run.toolExecutionPlan[run.toolExecutionPlan.length - 1];
-        if (!lastStep || lastStep.status !== 'completed' || !lastStep.result) {
+    async generateFollowUp(run, nextStep) {
+        const lastCompletedStep = [...run.toolExecutionPlan].reverse().find(s => s.status === 'completed');
+        if (!lastCompletedStep || !lastCompletedStep.result) {
+            logger.warn('FollowUpService: Could not find a last completed step with a result.', { runId: run.id });
             return { summary: null, nextToolCall: null };
         }
-        const { toolName, data } = lastStep.result;
-        let toolOutputSummary = `The action '${toolName}' completed successfully.`;
-        if (toolName === 'fetch_emails' && data?.emails) {
-            const emailCount = data.emails.length;
-            const firstEmailSubject = emailCount > 0 ? data.emails[0].subject : 'N/A';
-            toolOutputSummary = `I just ran the 'fetch_emails' tool and found ${emailCount} emails. The subject of the most recent email is "${firstEmailSubject}".`;
-        }
-        else if (toolName === 'fetch_entity' && data?.data?.records) {
-            const recordCount = data.data.records.length;
-            const firstRecordName = recordCount > 0 ? data.data.records[0].name : 'N/A';
-            toolOutputSummary = `I just ran the 'fetch_entity' tool and found ${recordCount} records. The first record is named "${firstRecordName}".`;
-        }
-        const prompt = `
-    You are an AI assistant. A tool has just been successfully executed on your behalf.
-    The user's original request was: "${run.userInput}"
-    Tool Execution Result: "${toolOutputSummary}"
-    
-    Based on this, formulate a brief, natural, and helpful follow-up message for the user.
-    Summarize what you found and ask what they would like to do next with the information.
-    Do not mention that a "tool" was run. Just speak naturally.
-  `;
+        const toolResultJson = JSON.stringify(lastCompletedStep.result.data, null, 2);
+        const nextToolName = nextStep.toolCall.name;
+        const nextToolSchema = this.toolConfigManager.getToolInputSchema(nextToolName);
+        const nextToolDescription = this.toolConfigManager.getToolDefinition(nextToolName)?.description || 'No description available.';
+        const prompt = followUpPrompt_1.FOLLOW_UP_PROMPT_TEMPLATE
+            .replace('{{USER_INITIAL_QUERY}}', run.userInput)
+            .replace('{{PREVIOUS_TOOL_RESULT_JSON}}', toolResultJson)
+            .replace('{{NEXT_TOOL_NAME}}', nextToolName)
+            .replace('{{NEXT_TOOL_DESCRIPTION}}', nextToolDescription)
+            .replace('{{NEXT_TOOL_PARAMETERS_JSON}}', JSON.stringify(nextToolSchema, null, 2));
         try {
             const chatCompletion = await this.client.chat.completions.create({
                 messages: [{ role: 'user', content: prompt }],
                 model: this.model,
+                response_format: { type: "json_object" },
                 max_tokens: this.maxTokens,
             });
-            const summary = chatCompletion.choices[0]?.message?.content || null;
-            return { summary, nextToolCall: null };
+            const responseContent = chatCompletion.choices[0]?.message?.content;
+            if (!responseContent) {
+                logger.warn('FollowUpService: LLM returned no content.', { runId: run.id });
+                return { summary: "The action was successful.", nextToolCall: null };
+            }
+            const parsedResponse = JSON.parse(responseContent);
+            const summary = parsedResponse.summary || null;
+            const nextToolCallArgs = parsedResponse.nextToolCallArgs || null;
+            const nextToolCall = nextToolCallArgs ? { ...nextStep.toolCall, arguments: nextToolCallArgs } : null;
+            return { summary, nextToolCall };
         }
         catch (error) {
             logger.error('Failed to generate AI follow-up from Groq.', { error });
-            return { summary: toolOutputSummary, nextToolCall: null };
+            return { summary: `The action '${lastCompletedStep.result.toolName}' completed successfully.`, nextToolCall: null };
         }
     }
 }
