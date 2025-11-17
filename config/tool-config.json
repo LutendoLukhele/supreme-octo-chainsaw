@@ -116,62 +116,7 @@
         "required": ["operation", "entityType", "fields"]
       }
     },
-    {
-      "name": "create_zoom_meeting",
-      "description": "Schedules a new meeting in Zoom. Use this for creating calendar events, appointments, or meetings.",
-      "providerConfigKey": "zoom",
-      "category": "Calendar",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "topic": {
-            "type": "string",
-            "description": "The title or topic of the meeting."
-          },
-          "type": {
-            "type": "string",
-            "description": "The type of meeting.",
-            "enum": ["scheduled", "instant", "recurring", "recurringNoFixed"]
-          },
-          "start_time": {
-            "type": "string",
-            "description": "The meeting's start time in ISO 8601 format (e.g., '2025-08-14T10:00:00Z'). Required for 'scheduled' and 'recurring' types."
-          },
-          "duration": {
-            "type": "number",
-            "description": "The meeting's duration in minutes."
-          },
-          "timezone": {
-            "type": "string",
-            "description": "The timezone for the meeting, e.g., 'Africa/Johannesburg'."
-          },
-          "agenda": {
-            "type": "string",
-            "description": "A description or agenda for the meeting."
-          },
-          "recurrence": {
-            "type": "object",
-            "description": "Recurrence details for a 'recurring' meeting.",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": ["daily", "weekly", "monthly"]
-              },
-              "repeat_interval": { "type": "number" },
-              "weekly_days": {
-                "type": "string",
-                "enum": ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
-              },
-              "end_times": {
-                "type": "number",
-                "description": "How many times the meeting should recur."
-              }
-            }
-          }
-        },
-        "required": ["topic", "type"]
-      }
-    },
+    
     {
       "name": "fetch_teams_entity",
       "description": "Fetch Microsoft Teams entities (Team, Channel, Chat, Message, Member, Tab, Call, Meeting) with advanced filtering.",
@@ -310,7 +255,7 @@
     {
       "name": "fetch_outlook_entity",
       "description": "Fetch Outlook entities (Message, MailFolder, Calendar, Event, Contact, ContactFolder, Attachment) with advanced filtering.",
-      "providerConfigKey": "outlook",
+      "providerConfigKey": "microsoft-outlook",
       "category": "Email",
       "parameters": {
         "type": "object",
@@ -408,7 +353,7 @@
     {
       "name": "create_outlook_entity",
       "description": "Create a new Outlook entity (Message, MailFolder, Calendar, Event, Contact, ContactFolder).",
-      "providerConfigKey": "outlook",
+      "providerConfigKey": "microsoft-outlook",
       "category": "Email",
       "parameters": {
         "type": "object",
@@ -444,7 +389,7 @@
     {
       "name": "update_outlook_entity",
       "description": "Update an existing Outlook entity (Message, Event, Contact, MailFolder).",
-      "providerConfigKey": "outlook",
+      "providerConfigKey": "microsoft-outlook",
       "category": "Email",
       "parameters": {
         "type": "object",
@@ -480,7 +425,7 @@
     {
       "name": "fetch_outlook_event_body",
       "description": "Fetch the full body content of a calendar event",
-      "providerConfigKey": "outlook",
+      "providerConfigKey": "microsoft-outlook",
       "category": "Email",
       "parameters": {
         "type": "object",
@@ -507,12 +452,6 @@
       "connection_id": "e5bce133-e6df-4cb7-9fb1-ec1d48023079",
       "objects": ["Message"]
     },
-    "zoom": {
-      "endpoint": "zoom",
-      "provider_config_key": "zoom",
-      "connection_id": "<YOUR_ZOOM_CONNECTION_ID>",
-      "objects": ["Meeting"]
-    },
     "salesforce-2": {
       "endpoint": "salesforce",
       "provider_config_key": "salesforce-2",
@@ -526,8 +465,8 @@
       "objects": ["Team", "Channel", "Chat", "Message", "Member", "Tab", "Call", "Meeting"]
     },
     "microsoft-outlook": {
-      "endpoint": "outlook",
-      "provider_config_key": "outlook",
+      "endpoint": "microsoft-outlook",
+      "provider_config_key": "microsoft-outlook",
       "connection_id": "<YOUR_OUTLOOK_CONNECTION_ID>",
       "objects": ["Message", "MailFolder", "Calendar", "Event", "Contact", "ContactFolder", "Attachment"]
     }

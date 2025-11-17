@@ -287,6 +287,8 @@ Output ONLY valid JSON with corrected arguments. No explanation.`;
             toolName: completedAction.toolName,
             data: completedAction.result,
             error: completedAction.error,
+            // Include enhanced Nango error details for QA/debugging if available
+            errorDetails: (completedAction as any).errorDetails || null,
           };
           step.finishedAt = new Date().toISOString();
           

@@ -321,13 +321,19 @@ export class ActionLauncherService extends EventEmitter {
       action.result = result.data;
       action.status = result.status === 'success' ? 'completed' : 'failed';
       action.error = result.status === 'failed' ? result.error : undefined;
-      
+
+      // Pass through enhanced error details from Nango if available (for QA/debugging)
+      if ((result as any).errorDetails) {
+        (action as any).errorDetails = (result as any).errorDetails;
+      }
+
       // Added for debugging data dependencies
       logger.info('ActionLauncher: Action completed with result', {
         sessionId,
         actionId,
         status: action.status,
-        result: JSON.stringify(action.result, null, 2)
+        result: JSON.stringify(action.result, null, 2),
+        errorDetails: (result as any).errorDetails || null
       });
 
       return action;

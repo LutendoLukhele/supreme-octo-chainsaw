@@ -147,8 +147,17 @@ export class NangoService {
         error: error.response?.data?.message || error.message,
         actionName,
       });
-      // Re-throw a more informative error
-      throw new Error(error.response?.data?.message || `Request failed with status code ${error.response?.status}`);
+      // Re-throw with full Nango error details for QA/debugging
+      const enhancedError: any = new Error(
+        error.response?.data?.message || `Request failed with status code ${error.response?.status}`
+      );
+      enhancedError.nangoErrorDetails = {
+        actionName,
+        statusCode: error.response?.status,
+        nangoPayload: error.response?.data || null,
+        timestamp: new Date().toISOString()
+      };
+      throw enhancedError;
     }
   }
 
@@ -207,12 +216,21 @@ async triggerSalesforceAction(
     return response.data as NangoResponse;
 
   } catch (error: any) {
-    this.logger.error('Salesforce action failed', { 
-      error: error.response?.data || error.message, 
-      actionName 
+    this.logger.error('Salesforce action failed', {
+      error: error.response?.data || error.message,
+      actionName
     });
-    // Re-throw a descriptive error matching fetchEmails pattern
-    throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+    // Re-throw with full Nango error details for QA/debugging
+    const enhancedError: any = new Error(
+      error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`
+    );
+    enhancedError.nangoErrorDetails = {
+      actionName,
+      statusCode: error.response?.status,
+      nangoPayload: error.response?.data || null,
+      timestamp: new Date().toISOString()
+    };
+    throw enhancedError;
   }
 }
 
@@ -285,12 +303,21 @@ async triggerSalesforceAction(
       return response.data as NangoResponse;
 
     } catch (error: any) {
-      this.logger.error('Nango direct API call to fetch-emails failed', { 
-        error: error.response?.data || error.message, 
-        actionName 
+      this.logger.error('Nango direct API call to fetch-emails failed', {
+        error: error.response?.data || error.message,
+        actionName
       });
-      // Re-throw a descriptive error
-      throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+      // Re-throw with full Nango error details for QA/debugging
+      const enhancedError: any = new Error(
+        error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`
+      );
+      enhancedError.nangoErrorDetails = {
+        actionName,
+        statusCode: error.response?.status,
+        nangoPayload: error.response?.data || null,
+        timestamp: new Date().toISOString()
+      };
+      throw enhancedError;
     }
   }
 

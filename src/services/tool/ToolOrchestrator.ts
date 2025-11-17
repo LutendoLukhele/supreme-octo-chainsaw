@@ -65,7 +65,21 @@ export class ToolOrchestrator extends BaseService {
 
         } catch (error: any) {
             logger.error('Tool execution failed unexpectedly in orchestrator', { error: error.message, stack: error.stack, toolCall });
-            return { status: 'failed', toolName: toolCall.name, data: null, error: error.message || 'Unknown error' };
+
+            // Build enhanced error response with Nango details if available
+            const errorResponse: ToolResult = {
+                status: 'failed',
+                toolName: toolCall.name,
+                data: null,
+                error: error.message || 'Unknown error'
+            };
+
+            // Attach Nango error details if present (for QA/debugging)
+            if (error.nangoErrorDetails) {
+                (errorResponse as any).errorDetails = error.nangoErrorDetails;
+            }
+
+            return errorResponse;
         }
     }
 
