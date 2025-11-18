@@ -6,6 +6,7 @@ import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
 import { ConversationConfig, Message, MessageType, ToolResult } from './types';
 import { ToolConfigManager } from '../tool/ToolConfigManager';
+import { ProviderAwareToolFilter } from '../tool/ProviderAwareToolFilter';
 import { MarkdownStreamParser } from '@lixpi/markdown-stream-parser';
 import { StreamChunk } from '../stream/types';
 import { MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE } from './prompts/mainConversationalPrompt';
@@ -87,14 +88,16 @@ export class ConversationService extends EventEmitter {
     private maxTokens: number;
     private conversationHistory: Map<string, Message[]> = new Map();
     private toolConfigManager: ToolConfigManager;
+    private providerAwareFilter?: ProviderAwareToolFilter;
 
-    constructor(private config: ConversationConfig) {
+    constructor(private config: ConversationConfig, providerAwareFilter?: ProviderAwareToolFilter) {
         super();
         if (!config.groqApiKey) throw new Error("Groq API key is missing.");
         this.client = new Groq({ apiKey: config.groqApiKey });
         this.model = config.model;
         this.maxTokens = config.maxTokens;
         this.toolConfigManager = new ToolConfigManager();
+        this.providerAwareFilter = providerAwareFilter;
     }
 
     public async processMessageAndAggregateResults(
@@ -120,7 +123,17 @@ export class ConversationService extends EventEmitter {
 
         if (!isSummaryMode) {
             const relevantCategories = getRelevantToolCategories(userMessage || history.at(-1)?.content || '');
-            const filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
+
+            // Use provider-aware filtering if available and userId is provided
+            let filteredToolConfigs;
+            if (this.providerAwareFilter && _userId) {
+                logger.info('Using provider-aware tool filtering', { userId: _userId, categories: relevantCategories });
+                filteredToolConfigs = await this.providerAwareFilter.getToolsByCategoriesForUser(_userId, relevantCategories);
+            } else {
+                logger.warn('Provider-aware filtering not available, falling back to category-only filtering');
+                filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
+            }
+
             const groqTools = filteredToolConfigs.map(tool => {
                 const inputSchema = this.toolConfigManager.getToolInputSchema(tool.name);
                 if (!inputSchema) {

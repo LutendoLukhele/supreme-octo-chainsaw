@@ -3,6 +3,7 @@ import Groq from 'groq-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import winston from 'winston';
 import { ToolConfigManager } from './tool/ToolConfigManager';
+import { ProviderAwareToolFilter } from './tool/ProviderAwareToolFilter';
 import { EventEmitter } from 'events';
 import { StreamChunk } from './stream/types';
 import { ChatCompletionMessageParam } from 'groq-sdk/resources/chat/completions';
@@ -42,6 +43,7 @@ export class PlannerService extends EventEmitter {
   private groqClient: Groq;
   private maxTokens: number;
   private toolConfigManager: ToolConfigManager;
+  private providerAwareFilter?: ProviderAwareToolFilter;
 
   // Using Llama 3.3 70B - the most capable model on Groq
   private static readonly MODEL = 'llama-3.3-70b-versatile';
@@ -49,10 +51,11 @@ export class PlannerService extends EventEmitter {
   constructor(
     groqApiKey: string,
     maxTokens: number,
-    toolConfigManager: ToolConfigManager
+    toolConfigManager: ToolConfigManager,
+    providerAwareFilter?: ProviderAwareToolFilter
   ) {
     super();
-    
+
     // Debug logging
     logger.info('PlannerService constructor called', {
       apiKeyProvided: !!groqApiKey,
@@ -60,12 +63,12 @@ export class PlannerService extends EventEmitter {
       apiKeyPrefix: groqApiKey?.substring(0, 10) || 'NONE',
       apiKeyType: typeof groqApiKey
     });
-    
+
     // Validate API key
     if (!groqApiKey || groqApiKey.trim() === '') {
       throw new Error('GROQ_API_KEY is required but was not provided');
     }
-    
+
     // Validate it starts with gsk_
     if (!groqApiKey.startsWith('gsk_')) {
       logger.error('Invalid Groq API key format - must start with gsk_', {
@@ -73,14 +76,15 @@ export class PlannerService extends EventEmitter {
       });
       throw new Error('Invalid Groq API key format - must start with gsk_');
     }
-    
-    this.groqClient = new Groq({ 
+
+    this.groqClient = new Groq({
       apiKey: groqApiKey.trim() // Trim any whitespace
     });
     this.maxTokens = maxTokens;
     this.toolConfigManager = toolConfigManager;
-    
-    logger.info('PlannerService initialized with Groq', { 
+    this.providerAwareFilter = providerAwareFilter;
+
+    logger.info('PlannerService initialized with Groq', {
       model: PlannerService.MODEL,
       maxTokens,
       apiKeyValid: true
@@ -91,9 +95,10 @@ export class PlannerService extends EventEmitter {
     userInput: string,
     toolCalls: any[],
     sessionId: string,
-    messageId: string
+    messageId: string,
+    userId?: string
   ): Promise<ActionPlan> {
-    const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId);
+    const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId, userId);
 
     if (plan && plan.length > 0) {
       plan.forEach((step, index) => {
@@ -399,10 +404,12 @@ public async generatePlan(
   userInput: string,
   identifiedToolCalls: { name: string; arguments: Record<string, any>; id?: string }[],
   sessionId: string,
-  clientMessageId: string
+  clientMessageId: string,
+  userId?: string
 ): Promise<ActionPlan> {
   logger.info('PlannerService: Generating action plan using structured output', {
     sessionId,
+    userId,
     userInputLength: userInput.length,
     numIdentifiedTools: identifiedToolCalls.length,
     identifiedToolNames: identifiedToolCalls.map(tc => tc.name)
@@ -418,7 +425,22 @@ public async generatePlan(
 
   this.emit('send_chunk', sessionId, plannerStatus as StreamChunk);
 
-  const availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
+  // Use provider-aware filtering if available and userId is provided
+  let availableTools;
+  if (this.providerAwareFilter && userId) {
+    logger.info('PlannerService: Using provider-aware tool filtering', { userId });
+    const filteredTools = await this.providerAwareFilter.getAvailableToolsForUser(userId);
+    availableTools = filteredTools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      parameters: tool.parameters
+    }));
+  } else {
+    logger.warn('PlannerService: Provider-aware filtering not available, using all tools');
+    availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
+  }
+
   const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
 
   let identifiedToolsPromptSection = "No tools pre-identified.";

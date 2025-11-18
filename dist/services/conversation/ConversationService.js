@@ -61,7 +61,7 @@ function getRelevantToolCategories(userInput) {
     return detectedCategories.size > 0 ? Array.from(detectedCategories) : ['Email', 'Calendar', 'CRM'];
 }
 class ConversationService extends events_1.EventEmitter {
-    constructor(config) {
+    constructor(config, providerAwareFilter) {
         super();
         this.config = config;
         this.conversationHistory = new Map();
@@ -71,6 +71,7 @@ class ConversationService extends events_1.EventEmitter {
         this.model = config.model;
         this.maxTokens = config.maxTokens;
         this.toolConfigManager = new ToolConfigManager_1.ToolConfigManager();
+        this.providerAwareFilter = providerAwareFilter;
     }
     async processMessageAndAggregateResults(userMessage, sessionId, incomingMessageId, _userId) {
         const messageProcessingId = (0, uuid_1.v4)();
@@ -86,7 +87,15 @@ class ConversationService extends events_1.EventEmitter {
         let initialUserQuery = '';
         if (!isSummaryMode) {
             const relevantCategories = getRelevantToolCategories(userMessage || history.at(-1)?.content || '');
-            const filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
+            let filteredToolConfigs;
+            if (this.providerAwareFilter && _userId) {
+                logger.info('Using provider-aware tool filtering', { userId: _userId, categories: relevantCategories });
+                filteredToolConfigs = await this.providerAwareFilter.getToolsByCategoriesForUser(_userId, relevantCategories);
+            }
+            else {
+                logger.warn('Provider-aware filtering not available, falling back to category-only filtering');
+                filteredToolConfigs = this.toolConfigManager.getToolsByCategories(relevantCategories);
+            }
             const groqTools = filteredToolConfigs.map(tool => {
                 const inputSchema = this.toolConfigManager.getToolInputSchema(tool.name);
                 if (!inputSchema) {

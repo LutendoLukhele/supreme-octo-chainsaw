@@ -1,31 +1,113 @@
 {
   "tools": [
     {
+      "name": "request_missing_parameters",
+      "description": "Use this tool ONLY when required parameters for another tool are missing and cannot be reasonably defaulted. Provide the intended tool and the list of missing required parameter names.",
+      "providerConfigKey": "__META__",
+      "category": "Meta",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "intended_tool_name": {
+                "type": "string",
+                "description": "The exact name of the tool the user likely intended to use (e.g., 'fetch_entity')."
+              },
+              "missing_params": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "A list of the exact names of REQUIRED parameters that are missing for the 'intended_tool_name'."
+              },
+              "clarification_question": {
+                "type": "string",
+                "description": "A clear question to ask the user to obtain the missing parameters, phrased from the assistant's perspective."
+              }
+            },
+            "required": [
+              "intended_tool_name",
+              "missing_params",
+              "clarification_question"
+            ]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
       "name": "fetch_emails",
-      "description": "Fetch Gmail emails with advanced filtering options.",
+      "description": "Fetch Gmail emails with advanced filtering options based on criteria like sender, subject, date, labels, or attachments.",
       "providerConfigKey": "google-mail",
       "category": "Email",
       "parameters": {
         "type": "object",
         "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["fetch"],
-            "description": "Specifies the operation, always 'fetch'."
-          },
-          "filters": {
+          "input": {
             "type": "object",
-            "description": "Optional: Criteria to filter emails.",
-            "optional": true,
             "properties": {
-              "sender": { "type": "string", "description": "Filter by sender's email.", "optional": true },
-              "recipient": { "type": "string", "description": "Filter by recipient's email.", "optional": true },
-              "dateRange": { "type": "object", "description": "Filter by date range.", "optional": true, "properties": { "after": { "type": "string" }, "before": { "type": "string" } } },
-              "hasAttachment": { "type": "boolean", "description": "Filter for emails with attachments.", "optional": true }
-            }
+              "operation": {
+                "type": "string",
+                "enum": ["fetch"],
+                "description": "Specifies the operation to perform, always 'fetch' for this tool."
+              },
+              "backfillPeriodMs": {
+                "type": "integer",
+                "description": "Optional: How far back in time to search for emails, specified in milliseconds.",
+                "optional": true
+              },
+              "filters": {
+                "type": "object",
+                "description": "Optional: A set of criteria to filter the emails.",
+                "optional": true,
+                "properties": {
+                  "sender": {
+                    "type": "string",
+                    "description": "Filter by the sender's email address.",
+                    "optional": true
+                  },
+                  "recipient": {
+                    "type": "string",
+                    "description": "Filter by the recipient's email address.",
+                    "optional": true
+                  },
+                  "subject": {
+                    "type": "object",
+                    "description": "Filter by keywords or phrases in the email subject.",
+                    "optional": true,
+                    "properties": {
+                      "contains": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Subject must contain ALL these keywords." },
+                      "startsWith": { "type": "string", "optional": true, "description": "Subject must start with this text." },
+                      "endsWith": { "type": "string", "optional": true, "description": "Subject must end with this text." },
+                      "exact": { "type": "string", "optional": true, "description": "Subject must match exactly." }
+                    }
+                  },
+                  "dateRange": {
+                    "type": "object",
+                    "description": "Filter emails received within a specific date range.",
+                    "optional": true,
+                    "properties": {
+                      "after": { "type": "string", "format": "date-time", "optional": true, "description": "Include emails received after this ISO 8601 timestamp." },
+                      "before": { "type": "string", "format": "date-time", "optional": true, "description": "Include emails received before this ISO 8601 timestamp." }
+                    }
+                  },
+                  "hasAttachment": { "type": "boolean", "optional": true, "description": "Filter for emails that have attachments." },
+                  "labels": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Filter by Gmail labels (e.g., INBOX, IMPORTANT, or custom labels)." },
+                  "includeBody": { "type": "boolean", "optional": true, "description": "Whether to include the full email body in the result (can be large). Defaults to false." },
+                  "excludeCategories": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Gmail categories to exclude (e.g., Promotions, Social, Updates)." },
+                  "isRead": { "type": "boolean", "optional": true, "description": "Filter based on read/unread status (true for read, false for unread)." },
+                  "isImportant": { "type": "boolean", "optional": true, "description": "Filter for emails marked as important by Gmail." },
+                  "includeSpam": { "type": "boolean", "optional": true, "description": "Whether to include emails from the Spam folder. Defaults to false." },
+                  "includeTrash": { "type": "boolean", "optional": true, "description": "Whether to include emails from the Trash folder. Defaults to false." },
+                  "limit": { "type": "integer", "description": "Maximum number of emails to return (default/max may vary).", "optional": true },
+                  "offset": { "type": "integer", "description": "Number of emails to skip (for pagination).", "optional": true }
+                }
+              }
+            },
+            "required": ["operation"] 
           }
         },
-        "required": ["operation"]
+        "required": ["input"]
       }
     },
     {
@@ -36,411 +118,875 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "operation": { "type": "string", "enum": ["send"], "description": "Operation must be 'send'." },
-          "to": { "type": "string", "description": "The recipient's email address." },
-          "subject": { "type": "string", "description": "The subject line of the email." },
-          "body": { "type": "string", "description": "The main content/body of the email." }
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": { "type": "string", "enum": ["send"], "description": "Operation must be 'send'." },
+              "to": { "type": "string", "description": "The recipient's email address." },
+              "subject": { "type": "string", "description": "The subject line of the email." },
+              "body": { "type": "string", "description": "The main content/body of the email." }
+            },
+            "required": ["operation", "to", "subject", "body"]
+          }
         },
-        "required": ["operation", "to", "subject", "body"]
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "fetch_calendar_events",
+      "description": "Fetch Google Calendar events. Use operation 'fetch' for a single event by ID, or 'fetch_list' to query multiple events with date range filters and search.",
+      "providerConfigKey": "google-calendar",
+      "category": "Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["fetch", "fetch_list"],
+                "description": "Use 'fetch' to get a single event by ID, or 'fetch_list' to query multiple events."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "The ID of the calendar. Defaults to 'primary'.",
+                "optional": true,
+                "default": "primary"
+              },
+              "eventId": {
+                "type": "string",
+                "description": "Required for operation 'fetch': The ID of the specific event to retrieve.",
+                "optional": true
+              },
+              "filters": {
+                "type": "object",
+                "description": "Optional filters for operation 'fetch_list' to query multiple events.",
+                "optional": true,
+                "properties": {
+                  "dateRange": {
+                    "type": "object",
+                    "description": "Filter events by time range.",
+                    "optional": true,
+                    "properties": {
+                      "timeMin": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Start of time range (RFC3339 format, e.g., '2024-11-01T00:00:00Z').",
+                        "optional": true
+                      },
+                      "timeMax": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "End of time range (RFC3339 format, e.g., '2024-11-30T23:59:59Z').",
+                        "optional": true
+                      }
+                    }
+                  },
+                  "conditions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "field": {
+                          "type": "string",
+                          "enum": ["summary", "description", "location", "attendee", "creator", "organizer"],
+                          "description": "Field to filter on."
+                        },
+                        "operator": {
+                          "type": "string",
+                          "enum": ["contains", "equals", "starts_with", "ends_with"],
+                          "description": "Filter operator."
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "Value to filter by."
+                        }
+                      },
+                      "required": ["field", "operator", "value"]
+                    },
+                    "description": "Additional filter conditions on event fields.",
+                    "optional": true
+                  },
+                  "showDeleted": {
+                    "type": "boolean",
+                    "description": "Include deleted events? Defaults to false.",
+                    "optional": true
+                  },
+                  "singleEvents": {
+                    "type": "boolean",
+                    "description": "Expand recurring events into instances? Defaults to true.",
+                    "optional": true,
+                    "default": true
+                  },
+                  "orderBy": {
+                    "type": "string",
+                    "enum": ["startTime", "updated"],
+                    "description": "Sort results by start time or last updated. Requires singleEvents=true for 'startTime'.",
+                    "optional": true
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of events to return (max 2500).",
+                    "optional": true
+                  },
+                  "q": {
+                    "type": "string",
+                    "description": "Free text search query to find events.",
+                    "optional": true
+                  },
+                  "iCalUID": {
+                    "type": "string",
+                    "description": "Filter by specific iCalendar UID.",
+                    "optional": true
+                  },
+                  "updatedMin": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Filter events modified after this timestamp.",
+                    "optional": true
+                  }
+                }
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format: 'detailed' (normalized), 'simple' (minimal), or 'raw' (API response).",
+                "optional": true,
+                "default": "detailed"
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "create_calendar_event",
+      "description": "Create a new event, meeting, or appointment in Google Calendar with full support for attendees, reminders, recurrence, and conference data.",
+      "providerConfigKey": "google-calendar",
+      "category": "Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["create", "batch_create"],
+                "description": "Use 'create' for a single event or 'batch_create' for multiple events."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "The ID of the calendar. Defaults to 'primary'.",
+                "optional": true,
+                "default": "primary"
+              },
+              "event": {
+                "type": "object",
+                "description": "Event details for operation 'create'.",
+                "optional": true,
+                "properties": {
+                  "summary": {
+                    "type": "string",
+                    "description": "The title/summary of the event."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Detailed description of the event.",
+                    "optional": true
+                  },
+                  "location": {
+                    "type": "string",
+                    "description": "Physical or virtual location of the event.",
+                    "optional": true
+                  },
+                  "start": {
+                    "type": "object",
+                    "description": "Start time of the event.",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "For timed events (RFC3339 format, e.g., '2024-11-20T10:00:00-08:00').",
+                        "optional": true
+                      },
+                      "date": {
+                        "type": "string",
+                        "description": "For all-day events (YYYY-MM-DD format).",
+                        "optional": true
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "description": "Time zone (e.g., 'America/Los_Angeles').",
+                        "optional": true
+                      }
+                    }
+                  },
+                  "end": {
+                    "type": "object",
+                    "description": "End time of the event.",
+                    "properties": {
+                      "dateTime": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "For timed events.",
+                        "optional": true
+                      },
+                      "date": {
+                        "type": "string",
+                        "description": "For all-day events.",
+                        "optional": true
+                      },
+                      "timeZone": {
+                        "type": "string",
+                        "description": "Time zone.",
+                        "optional": true
+                      }
+                    }
+                  },
+                  "attendees": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "email": { "type": "string", "description": "Attendee email address." },
+                        "displayName": { "type": "string", "optional": true },
+                        "optional": { "type": "boolean", "optional": true, "description": "Is this attendee optional?" }
+                      },
+                      "required": ["email"]
+                    },
+                    "description": "List of event attendees.",
+                    "optional": true
+                  },
+                  "reminders": {
+                    "type": "object",
+                    "description": "Event reminders configuration.",
+                    "optional": true,
+                    "properties": {
+                      "useDefault": {
+                        "type": "boolean",
+                        "description": "Use calendar default reminders?",
+                        "optional": true
+                      },
+                      "overrides": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "method": { "type": "string", "enum": ["email", "popup", "sms"] },
+                            "minutes": { "type": "integer", "description": "Minutes before event." }
+                          },
+                          "required": ["method", "minutes"]
+                        },
+                        "optional": true
+                      }
+                    }
+                  },
+                  "recurrence": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Recurrence rules in RRULE format (e.g., ['RRULE:FREQ=WEEKLY;COUNT=10']).",
+                    "optional": true
+                  },
+                  "conferenceData": {
+                    "type": "object",
+                    "description": "Conference/meeting link configuration (e.g., Google Meet).",
+                    "optional": true,
+                    "properties": {
+                      "createRequest": {
+                        "type": "object",
+                        "properties": {
+                          "requestId": { "type": "string", "description": "Unique request ID." },
+                          "conferenceSolutionKey": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string", "enum": ["hangoutsMeet", "eventHangout"] }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "visibility": {
+                    "type": "string",
+                    "enum": ["default", "public", "private", "confidential"],
+                    "optional": true
+                  },
+                  "transparency": {
+                    "type": "string",
+                    "enum": ["opaque", "transparent"],
+                    "description": "'opaque' = busy, 'transparent' = free.",
+                    "optional": true
+                  }
+                },
+                "required": ["summary", "start", "end"]
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "Event object (same structure as 'event' above)."
+                },
+                "description": "Array of events for operation 'batch_create' (max 50).",
+                "optional": true
+              },
+              "sendUpdates": {
+                "type": "string",
+                "enum": ["all", "externalOnly", "none"],
+                "description": "Send calendar invitations to attendees? Defaults to 'none'.",
+                "optional": true,
+                "default": "none"
+              },
+              "conferenceDataVersion": {
+                "type": "integer",
+                "enum": [0, 1],
+                "description": "Set to 1 to enable conference data creation.",
+                "optional": true
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "update_calendar_event",
+      "description": "Update existing Google Calendar event(s). Use 'update' for a single event or 'batch_update' for multiple events.",
+      "providerConfigKey": "google-calendar",
+      "category": "Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["update", "batch_update"],
+                "description": "Use 'update' for single event, 'batch_update' for multiple."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "The ID of the calendar. Defaults to 'primary'.",
+                "optional": true,
+                "default": "primary"
+              },
+              "eventId": {
+                "type": "string",
+                "description": "Required for 'update': The ID of the event to update.",
+                "optional": true
+              },
+              "fields": {
+                "type": "object",
+                "description": "Fields to update for operation 'update'. Only provided fields will be changed.",
+                "optional": true,
+                "properties": {
+                  "summary": { "type": "string", "optional": true },
+                  "description": { "type": "string", "optional": true },
+                  "location": { "type": "string", "optional": true },
+                  "start": {
+                    "type": "object",
+                    "optional": true,
+                    "properties": {
+                      "dateTime": { "type": "string", "format": "date-time", "optional": true },
+                      "date": { "type": "string", "optional": true },
+                      "timeZone": { "type": "string", "optional": true }
+                    }
+                  },
+                  "end": {
+                    "type": "object",
+                    "optional": true,
+                    "properties": {
+                      "dateTime": { "type": "string", "format": "date-time", "optional": true },
+                      "date": { "type": "string", "optional": true },
+                      "timeZone": { "type": "string", "optional": true }
+                    }
+                  },
+                  "attendees": { "type": "array", "optional": true },
+                  "reminders": { "type": "object", "optional": true },
+                  "status": {
+                    "type": "string",
+                    "enum": ["confirmed", "tentative", "cancelled"],
+                    "optional": true
+                  }
+                }
+              },
+              "updates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "eventId": { "type": "string", "description": "Event ID to update." },
+                    "fields": { "type": "object", "description": "Fields to update." }
+                  },
+                  "required": ["eventId", "fields"]
+                },
+                "description": "Array of updates for operation 'batch_update' (max 50).",
+                "optional": true
+              },
+              "sendUpdates": {
+                "type": "string",
+                "enum": ["all", "externalOnly", "none"],
+                "description": "Notify attendees of changes? Defaults to 'none'.",
+                "optional": true,
+                "default": "none"
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "fetch_notion_page",
+      "description": "Fetch Notion pages or query database rows. Use operation 'fetch' for a single page by ID, or 'fetch_database' to query a database with filters and sorting.",
+      "providerConfigKey": "notion",
+      "category": "Productivity",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["fetch", "fetch_database"],
+                "description": "Use 'fetch' for a single page, 'fetch_database' to query database rows."
+              },
+              "entityType": {
+                "type": "string",
+                "enum": ["Page", "DatabaseRow"],
+                "description": "Type of entity to fetch.",
+                "optional": true
+              },
+              "identifier": {
+                "type": "string",
+                "description": "Required for 'fetch': The page ID (UUID format).",
+                "optional": true
+              },
+              "databaseId": {
+                "type": "string",
+                "description": "Required for 'fetch_database': The database ID (UUID format).",
+                "optional": true
+              },
+              "filters": {
+                "type": "object",
+                "description": "Filters for operation 'fetch_database'.",
+                "optional": true,
+                "properties": {
+                  "conditions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "property": {
+                          "type": "string",
+                          "description": "Property name to filter on."
+                        },
+                        "operator": {
+                          "type": "string",
+                          "enum": [
+                            "equals", "does_not_equal", "contains", "does_not_contain",
+                            "starts_with", "ends_with", "is_empty", "is_not_empty",
+                            "greater_than", "less_than", "greater_than_or_equal_to", "less_than_or_equal_to",
+                            "before", "after", "on_or_before", "on_or_after"
+                          ],
+                          "description": "Filter operator."
+                        },
+                        "value": {
+                          "description": "Value to filter by.",
+                          "optional": true
+                        }
+                      },
+                      "required": ["property", "operator"]
+                    },
+                    "description": "List of filter conditions.",
+                    "optional": true
+                  },
+                  "logic": {
+                    "type": "string",
+                    "enum": ["and", "or"],
+                    "description": "Logical operator for combining conditions.",
+                    "optional": true
+                  },
+                  "sorts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "property": { "type": "string", "optional": true },
+                        "timestamp": {
+                          "type": "string",
+                          "enum": ["created_time", "last_edited_time"],
+                          "optional": true
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": ["ascending", "descending"]
+                        }
+                      },
+                      "required": ["direction"]
+                    },
+                    "description": "Sorting configuration.",
+                    "optional": true
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (max 100).",
+                    "optional": true
+                  },
+                  "includeArchived": {
+                    "type": "boolean",
+                    "description": "Include archived pages?",
+                    "optional": true
+                  }
+                }
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format. Defaults to 'detailed'.",
+                "optional": true,
+                "default": "detailed"
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "create_notion_page",
+      "description": "Create new Notion pages in a database or as child pages. Use 'create' for a single page or 'batch_create' for multiple pages.",
+      "providerConfigKey": "notion",
+      "category": "Productivity",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["create", "batch_create"],
+                "description": "Use 'create' for single page, 'batch_create' for multiple."
+              },
+              "parent": {
+                "type": "object",
+                "description": "Parent location for operation 'create'.",
+                "optional": true,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["database_id", "page_id", "workspace"]
+                  },
+                  "database_id": { "type": "string", "optional": true },
+                  "page_id": { "type": "string", "optional": true },
+                  "workspace": { "type": "boolean", "optional": true }
+                },
+                "required": ["type"]
+              },
+              "properties": {
+                "type": "object",
+                "description": "Page properties (key-value pairs). Values can be strings, numbers, booleans, or Notion property objects.",
+                "optional": true
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "Block objects for page content."
+                },
+                "description": "Content blocks to add to the page.",
+                "optional": true
+              },
+              "icon": {
+                "type": "object",
+                "description": "Page icon (emoji or image).",
+                "optional": true,
+                "properties": {
+                  "type": { "type": "string", "enum": ["emoji", "external", "file"] },
+                  "emoji": { "type": "string", "optional": true },
+                  "external": { "type": "object", "optional": true, "properties": { "url": { "type": "string" } } }
+                }
+              },
+              "cover": {
+                "type": "object",
+                "description": "Page cover image.",
+                "optional": true,
+                "properties": {
+                  "type": { "type": "string", "enum": ["external", "file"] },
+                  "external": { "type": "object", "optional": true, "properties": { "url": { "type": "string" } } }
+                }
+              },
+              "pages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "Page object (same structure as single create)."
+                },
+                "description": "Array of pages for 'batch_create' (max 100).",
+                "optional": true
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "update_notion_page",
+      "description": "Update existing Notion page(s) properties, archive status, icon, or cover. Use 'update' for a single page or 'batch_update' for multiple.",
+      "providerConfigKey": "notion",
+      "category": "Productivity",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["update", "batch_update"],
+                "description": "Use 'update' for single page, 'batch_update' for multiple."
+              },
+              "pageId": {
+                "type": "string",
+                "description": "Required for 'update': The page ID to update.",
+                "optional": true
+              },
+              "properties": {
+                "type": "object",
+                "description": "Properties to update (only specified properties will change).",
+                "optional": true
+              },
+              "archived": {
+                "type": "boolean",
+                "description": "Archive (true) or restore (false) the page.",
+                "optional": true
+              },
+              "icon": {
+                "type": "object",
+                "description": "Update page icon.",
+                "optional": true,
+                "properties": {
+                  "type": { "type": "string", "enum": ["emoji", "external", "file"] },
+                  "emoji": { "type": "string", "optional": true },
+                  "external": { "type": "object", "optional": true }
+                }
+              },
+              "cover": {
+                "type": "object",
+                "description": "Update page cover.",
+                "optional": true,
+                "properties": {
+                  "type": { "type": "string", "enum": ["external", "file"] },
+                  "external": { "type": "object", "optional": true }
+                }
+              },
+              "updates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "pageId": { "type": "string" },
+                    "properties": { "type": "object", "optional": true },
+                    "archived": { "type": "boolean", "optional": true },
+                    "icon": { "type": "object", "optional": true },
+                    "cover": { "type": "object", "optional": true }
+                  },
+                  "required": ["pageId"]
+                },
+                "description": "Array of updates for 'batch_update' (max 100).",
+                "optional": true
+              }
+            },
+            "required": ["operation"]
+          }
+        },
+        "required": ["input"]
       }
     },
     {
       "name": "fetch_entity",
-      "description": "Fetch Salesforce records with advanced filtering.",
+      "description": "Fetch Salesforce records (Account, Contact, Lead, Deal, etc.) with optional identifier or advanced filtering.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "operation": { "type": "string", "enum": ["fetch"], "description": "Operation must be 'fetch'." },
-          "entityType": {
-            "type": "string",
-            "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
-            "description": "The type of Salesforce object to fetch."
-          },
-          "identifier": {
-            "type": "string",
-            "description": "Optional: ID or unique value (Name/Email) to fetch a single record. Use 'all' for multiple records.",
-            "optional": true
-          },
-          "filters": {
+          "input": {
             "type": "object",
-            "description": "Optional: Advanced criteria for filtering records.",
-            "optional": true,
             "properties": {
-              "conditions": { "type": "array", "items": { "type": "object" }, "description": "List of filter conditions." },
-              "logic": { "type": "string", "optional": true, "description": "Logical combination of conditions (e.g., '1 AND 2')." },
-              "limit": { "type": "number", "optional": true, "description": "Maximum number of records." }
-            }
+              "operation": { "type": "string", "enum": ["fetch"], "description": "Operation must be 'fetch'." },
+              "entityType": {
+                "type": "string",
+                "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
+                "description": "The type of Salesforce object to fetch."
+              },
+              "identifier": {
+                "type": "string",
+                "description": "Optional: The specific ID or unique field value (like Name or Email based on entityType) to fetch a single record. Use 'all' to fetch multiple records (requires filters or uses defaults).",
+                "optional": true
+              },
+              "identifierType": {
+                "type": "string",
+                "description": "Optional: Specifies which field the 'identifier' value refers to (e.g., 'Id', 'Name', 'Email'). Only needed if 'identifier' is provided and isn't an Id or 'all'.",
+                "optional": true
+              },
+              "filters": {
+                "type": "object",
+                "description": "Optional: Advanced criteria for filtering records when fetching multiple. Required if 'identifier' is 'all' or omitted.",
+                "optional": true,
+                "properties": {
+                  "conditions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "field": {
+                          "type": "string",
+                          "description": "The API name of the field to filter on. IMPORTANT: For fields on related objects, use dot notation, for example: 'Account.Name' or 'CreatedBy.Email'."
+                        },
+                        "operator": { "type": "string", "enum": ["equals", "notEquals", "greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "contains", "notContains", "startsWith", "endsWith", "in", "notIn", "between", "isNull", "isNotNull"], "description": "Comparison operator." },
+                        "value": { "type": ["string", "number", "boolean", "array", "object", "null"], "description": "Single value for comparison (can be null)." },
+                        "values": { "type": "array", "items": { "type": ["string", "number", "boolean", "null"] }, "nullable": true, "description": "Multiple values for 'in', 'notIn', 'between' operators (usually strings, numbers, booleans, or null)." }
+                      },
+                      "required": ["field", "operator"]
+                    },
+                    "description": "List of filter conditions."
+                  },
+                  "logic": { "type": "string", "optional": true, "description": "Logical combination of conditions (e.g., '1 AND (2 OR 3)'). Defaults to AND if multiple conditions exist." },
+                  "orderBy": { "type": "array", "items": { "type": "object", "properties": { "field": { "type": "string" }, "direction": { "type": "string", "enum": ["ASC", "DESC"] } }, "required": ["field"] }, "optional": true, "description": "Sorting criteria." },
+                  "limit": { "type": "number", "optional": true, "description": "Maximum number of records. Defaults usually apply." },
+                  "offset": { "type": "number", "optional": true, "description": "Number of records to skip (pagination)." },
+                  "includeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to return. If omitted, default fields are returned." },
+                  "excludeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to exclude." },
+                  "timeFrame": { "type": "string", "optional": true, "description": "Predefined time frame (e.g., 'last7days')." },
+                  "groupBy": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Fields for grouping results." },
+                  "aggregate": { "type": "array", "items": { "type": "object", "properties": { "function": { "type": "string", "enum": ["SUM", "AVG", "COUNT", "MIN", "MAX"] }, "field": { "type": "string" }, "alias": { "type": "string" } }, "required": ["function", "field"] }, "optional": true, "description": "Aggregation functions." },
+                  "includeDeleted": { "type": "boolean", "optional": true, "description": "Include deleted records? Defaults to false." }
+                }
+              },
+              "fields": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional: Specific fields to include in the results, alternative to 'filters.includeFields'.",
+                "optional": true
+              }
+            },
+            "required": ["operation", "entityType"]
           }
         },
-        "required": ["operation", "entityType"]
+        "required": ["input"]
       }
     },
     {
       "name": "create_entity",
-      "description": "Create a new Salesforce record.",
+      "description": "Use for business records. Create a new Salesforce record like an Account, Contact, Lead, Deal, or a support Case.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "operation": { "type": "string", "enum": ["create"], "description": "Operation must be 'create'." },
-          "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
-          "fields": {
+          "input": {
             "type": "object",
-            "description": "A key-value object of fields for the new record. The required fields depend on the 'entityType'.\n- For a 'Lead', you MUST include 'Company', 'LastName', and 'Status'. Example: { \"Company\": \"Innovate Corp\", \"LastName\": \"Doe\", \"Status\": \"Open - Not Contacted\" }\n- For a 'Contact', you MUST include 'LastName'. Example: { \"LastName\": \"Smith\", \"FirstName\": \"Jane\" }"
+            "properties": {
+              "operation": { "type": "string", "enum": ["create"], "description": "Operation must be 'create'." },
+              "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
+              "fields": {
+                "type": "object",
+                "description": "Use for creating a SINGLE record. Key-value pairs of fields for the new record.",
+                "optional": true
+              },
+              "records": {
+                "type": "array",
+                "items": { "type": "object" },
+                "description": "Use for creating MULTIPLE records in a batch. An array of record objects.",
+                "optional": true
+              }
+            },
+            "required": ["operation", "entityType"]
           }
         },
-        "required": ["operation", "entityType", "fields"]
+        "required": ["input"]
       }
     },
     {
       "name": "update_entity",
-      "description": "Update existing Salesforce record(s).",
+      "description": "Update existing Salesforce record(s). Use 'identifier' to update a SINGLE record. Use 'records' for MULTIPLE records in a batch.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
         "type": "object",
         "properties": {
-          "operation": { "type": "string", "enum": ["update"], "description": "Operation must be 'update'." },
-          "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to update." },
-          "identifier": { "type": "string", "optional": true, "description": "Optional: ID or unique field value to identify a SINGLE record." },
-          "filters": { "type": "object", "optional": true, "description": "Optional: Filters to identify MULTIPLE records." },
-          "fields": {
+          "input": {
             "type": "object",
-            "minProperties": 1,
-            "description": "Required: Key-value pairs of fields and their new values."
-          }
-        },
-        "required": ["operation", "entityType", "fields"]
-      }
-    },
-    
-    {
-      "name": "fetch_teams_entity",
-      "description": "Fetch Microsoft Teams entities (Team, Channel, Chat, Message, Member, Tab, Call, Meeting) with advanced filtering.",
-      "providerConfigKey": "microsoft-teams",
-      "category": "Collaboration",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["fetch"],
-            "description": "Operation must be 'fetch'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Team", "Channel", "Chat", "Message", "Member", "Tab", "Call", "Meeting"],
-            "description": "The type of Teams object to fetch."
-          },
-          "identifier": {
-            "type": "string",
-            "description": "Optional: ID to fetch a single record. Use 'all' for multiple records.",
-            "optional": true
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID (e.g., teamId for Channel, 'teamId:channelId' for Message).",
-            "optional": true
-          },
-          "filters": {
-            "type": "object",
-            "description": "Optional: Advanced criteria for filtering records.",
-            "optional": true,
             "properties": {
-              "conditions": {
-                "type": "array",
-                "items": { "type": "object" },
-                "description": "List of filter conditions.",
-                "optional": true
+              "operation": {
+                "type": "string",
+                "enum": ["update", "batch_update"],
+                "description": "Use 'update' for a single record, 'batch_update' for multiple."
               },
-              "dateRange": {
-                "type": "object",
-                "optional": true,
-                "properties": {
-                  "after": { "type": "string", "optional": true },
-                  "before": { "type": "string", "optional": true }
-                }
+              "entityType": {
+                "type": "string",
+                "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
+                "description": "The type of Salesforce object to update."
               },
-              "limit": {
-                "type": "number",
-                "optional": true,
-                "description": "Maximum number of records."
-              },
-              "offset": {
-                "type": "number",
-                "optional": true
-              }
-            }
-          },
-          "format": {
-            "type": "string",
-            "enum": ["detailed", "simple", "raw"],
-            "optional": true,
-            "description": "Output format (default: detailed)"
-          }
-        },
-        "required": ["operation", "entityType"]
-      }
-    },
-    {
-      "name": "create_teams_entity",
-      "description": "Create a new Microsoft Teams entity (Team, Channel, Chat, Message, Member, Tab, Meeting).",
-      "providerConfigKey": "microsoft-teams",
-      "category": "Collaboration",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["create"],
-            "description": "Operation must be 'create'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Team", "Channel", "Chat", "Message", "Member", "Tab", "Meeting"],
-            "description": "Type of Teams object to create."
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID (e.g., teamId for Channel, 'teamId:channelId' for Message).",
-            "optional": true
-          },
-          "fields": {
-            "type": "object",
-            "description": "Key-value object of fields for the new record. Required fields depend on entityType:\n- Team: displayName (required)\n- Channel: displayName (required), membershipType\n- Message: body (required)\n- Chat: chatType, members (required)\n- Member: userId or user object\n- Meeting: subject, startDateTime, endDateTime"
-          }
-        },
-        "required": ["operation", "entityType", "fields"]
-      }
-    },
-    {
-      "name": "update_teams_entity",
-      "description": "Update an existing Microsoft Teams entity (Team, Channel, Chat, Message, Member, Meeting).",
-      "providerConfigKey": "microsoft-teams",
-      "category": "Collaboration",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["update"],
-            "description": "Operation must be 'update'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Team", "Channel", "Chat", "Message", "Member", "Meeting"],
-            "description": "Type of Teams object to update."
-          },
-          "identifier": {
-            "type": "string",
-            "description": "ID to identify the record to update."
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID.",
-            "optional": true
-          },
-          "fields": {
-            "type": "object",
-            "minProperties": 1,
-            "description": "Key-value pairs of fields and their new values."
-          }
-        },
-        "required": ["operation", "entityType", "identifier", "fields"]
-      }
-    },
-    {
-      "name": "fetch_outlook_entity",
-      "description": "Fetch Outlook entities (Message, MailFolder, Calendar, Event, Contact, ContactFolder, Attachment) with advanced filtering.",
-      "providerConfigKey": "microsoft-outlook",
-      "category": "Email",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["fetch"],
-            "description": "Operation must be 'fetch'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Message", "MailFolder", "Calendar", "Event", "Contact", "ContactFolder", "Attachment"],
-            "description": "The type of Outlook object to fetch."
-          },
-          "identifier": {
-            "type": "string",
-            "description": "Optional: ID to fetch a single record. Use 'all' for multiple records.",
-            "optional": true
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID (e.g., folderId for Message, calendarId for Event).",
-            "optional": true
-          },
-          "filters": {
-            "type": "object",
-            "description": "Optional: Advanced criteria for filtering records.",
-            "optional": true,
-            "properties": {
-              "conditions": {
-                "type": "array",
-                "items": { "type": "object" },
-                "description": "List of filter conditions.",
-                "optional": true
-              },
-              "dateRange": {
-                "type": "object",
-                "optional": true,
-                "properties": {
-                  "after": { "type": "string", "optional": true },
-                  "before": { "type": "string", "optional": true }
-                }
-              },
-              "sender": {
+              "identifier": {
                 "type": "string",
                 "optional": true,
-                "description": "Filter messages by sender email"
+                "description": "Use for a SINGLE record update. The value used to find the record (e.g., a record ID, Name, or Email)."
               },
-              "recipient": {
+              "identifierType": {
                 "type": "string",
+                "enum": ["Id", "Name", "Email", "ExternalId"],
                 "optional": true,
-                "description": "Filter messages by recipient email"
+                "description": "The type of field the 'identifier' refers to. Defaults to 'Id' if not provided."
               },
-              "hasAttachment": {
-                "type": "boolean",
-                "optional": true,
-                "description": "Filter messages with/without attachments"
+              "fields": {
+                "type": "object",
+                "minProperties": 1,
+                "description": "Use for a SINGLE record update. Key-value pairs of fields and their new values.",
+                "optional": true
               },
-              "isRead": {
-                "type": "boolean",
-                "optional": true,
-                "description": "Filter by read/unread status"
-              },
-              "includeHiddenFolders": {
-                "type": "boolean",
-                "optional": true,
-                "description": "Include hidden mail folders (default: true)"
-              },
-              "recursiveFolders": {
-                "type": "boolean",
-                "optional": true,
-                "description": "Recursively fetch all child folders (MailFolder only)"
-              },
-              "limit": {
-                "type": "number",
-                "optional": true,
-                "description": "Maximum number of records"
-              },
-              "offset": {
-                "type": "number",
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "identifier": {
+                      "type": "string",
+                      "description": "The value used to find the record (e.g., a record ID, Name, or Email)."
+                    },
+                    "identifierType": {
+                      "type": "string",
+                      "enum": ["Id", "Name", "Email", "ExternalId"],
+                      "optional": true,
+                      "description": "The type of field the 'identifier' refers to. Defaults to 'Id'."
+                    },
+                    "fields": {
+                      "type": "object",
+                      "description": "Key-value pairs of fields and their new values."
+                    }
+                  },
+                  "required": ["identifier", "fields"]
+                },
+                "description": "Use for a BATCH update. An array of objects, each with an 'identifier', 'fields', and optional 'identifierType'.",
                 "optional": true
               }
-            }
-          },
-          "format": {
-            "type": "string",
-            "enum": ["detailed", "simple", "raw"],
-            "optional": true,
-            "description": "Output format (default: detailed)"
+            },
+            "required": ["operation", "entityType"]
           }
         },
-        "required": ["operation", "entityType"]
-      }
-    },
-    {
-      "name": "create_outlook_entity",
-      "description": "Create a new Outlook entity (Message, MailFolder, Calendar, Event, Contact, ContactFolder).",
-      "providerConfigKey": "microsoft-outlook",
-      "category": "Email",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["create"],
-            "description": "Operation must be 'create'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Message", "MailFolder", "Calendar", "Event", "Contact", "ContactFolder"],
-            "description": "Type of Outlook object to create."
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID (e.g., folderId for Message).",
-            "optional": true
-          },
-          "fields": {
-            "type": "object",
-            "description": "Key-value object of fields:\n- Message: subject, body, toRecipients (required)\n- Event: subject, start, end (required)\n- Contact: givenName, emailAddresses (required)\n- MailFolder/ContactFolder: displayName (required)"
-          },
-          "sendImmediately": {
-            "type": "boolean",
-            "optional": true,
-            "description": "For Message: send immediately (true) vs save as draft (false)"
-          }
-        },
-        "required": ["operation", "entityType", "fields"]
-      }
-    },
-    {
-      "name": "update_outlook_entity",
-      "description": "Update an existing Outlook entity (Message, Event, Contact, MailFolder).",
-      "providerConfigKey": "microsoft-outlook",
-      "category": "Email",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "operation": {
-            "type": "string",
-            "enum": ["update"],
-            "description": "Operation must be 'update'."
-          },
-          "entityType": {
-            "type": "string",
-            "enum": ["Message", "Event", "Contact", "MailFolder", "ContactFolder"],
-            "description": "Type of Outlook object to update."
-          },
-          "identifier": {
-            "type": "string",
-            "description": "ID to identify the record to update."
-          },
-          "parentId": {
-            "type": "string",
-            "description": "Optional: Parent entity ID.",
-            "optional": true
-          },
-          "fields": {
-            "type": "object",
-            "minProperties": 1,
-            "description": "Key-value pairs of fields to update."
-          }
-        },
-        "required": ["operation", "entityType", "identifier", "fields"]
-      }
-    },
-    {
-      "name": "fetch_outlook_event_body",
-      "description": "Fetch the full body content of a calendar event",
-      "providerConfigKey": "microsoft-outlook",
-      "category": "Email",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "eventId": {
-            "type": "string",
-            "description": "The event ID"
-          },
-          "calendarId": {
-            "type": "string",
-            "description": "Optional: Calendar ID if event is in a specific calendar",
-            "optional": true
-          }
-        },
-        "required": ["eventId"]
+        "required": ["input"]
       }
     }
   ],
@@ -452,23 +998,23 @@
       "connection_id": "e5bce133-e6df-4cb7-9fb1-ec1d48023079",
       "objects": ["Message"]
     },
+    "google-calendar": {
+      "endpoint": "calendar",
+      "provider_config_key": "google-calendar",
+      "connection_id": "30009351-89b2-4546-9367-bce987d6d79d",
+      "objects": ["Calendar", "Event"]
+    },
+    "notion": {
+      "endpoint": "notion",
+      "provider_config_key": "notion",
+      "connection_id": "notion-connection-id-placeholder",
+      "objects": ["Page", "Database"]
+    },
     "salesforce-2": {
       "endpoint": "salesforce",
       "provider_config_key": "salesforce-2",
       "connection_id": "2afdea8f-9c5a-4555-9e88-6c440e59c037",
       "objects": ["Account", "Contact", "Lead", "Deal", "Article", "Case"]
-    },
-    "microsoft-teams": {
-      "endpoint": "microsoft-teams",
-      "provider_config_key": "microsoft-teams",
-      "connection_id": "<YOUR_TEAMS_CONNECTION_ID>",
-      "objects": ["Team", "Channel", "Chat", "Message", "Member", "Tab", "Call", "Meeting"]
-    },
-    "microsoft-outlook": {
-      "endpoint": "microsoft-outlook",
-      "provider_config_key": "microsoft-outlook",
-      "connection_id": "<YOUR_OUTLOOK_CONNECTION_ID>",
-      "objects": ["Message", "MailFolder", "Calendar", "Event", "Contact", "ContactFolder", "Attachment"]
     }
   }
 }

@@ -20,6 +20,7 @@ const redis = new Redis(CONFIG.REDIS_URL!);
 
 import { ConversationService } from './services/conversation/ConversationService';
 import { ToolOrchestrator } from './services/tool/ToolOrchestrator';
+import { ProviderAwareToolFilter } from './services/tool/ProviderAwareToolFilter';
 import { StreamManager } from './services/stream/StreamManager';
 import { NangoService } from './services/NangoService';
 import { FollowUpService } from './services/FollowUpService';
@@ -29,6 +30,7 @@ import { ActionLauncherService } from './action-launcher.service';
 import { RunManager } from './services/tool/RunManager';
 import { StreamChunk } from './services/stream/types';
 import { ExecuteActionPayload } from './types/actionlaunchertypes';
+import { neon } from '@neondatabase/serverless';
 
 // --- Types ---
 import { Run, ToolExecutionStep, ToolCall } from './services/tool/run.types';
@@ -64,13 +66,18 @@ const logger = winston.createLogger({
 // --- Service Initialization ---
 const groqClient = new Groq({ apiKey: CONFIG.GROQ_API_KEY });
 const toolConfigManager = new ToolConfigManager();
+
+// Initialize database connection for provider-aware filtering
+const sql = neon(process.env.DATABASE_URL!);
+const providerAwareFilter = new ProviderAwareToolFilter(toolConfigManager, sql);
+
 const nangoService = new NangoService();
 const streamManager = new StreamManager({ logger });
 const dataDependencyService = new DataDependencyService();
 const resolver = new Resolver(dataDependencyService);
 const followUpService = new FollowUpService(groqClient, CONFIG.MODEL_NAME, CONFIG.MAX_TOKENS);
 const toolOrchestrator = new ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
-const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager);
+const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager, providerAwareFilter);
 const beatEngine = new BeatEngine(toolConfigManager);
 const historyService = new HistoryService(redis);
 
@@ -83,7 +90,7 @@ const conversationService = new ConversationService({
     logger: logger,
     client: groqClient,
     tools: [],
-});
+}, providerAwareFilter);
 
 const actionLauncherService = new ActionLauncherService(
     conversationService,
@@ -454,8 +461,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             const processedResult = await conversationService.processMessageAndAggregateResults(
                 data.content,
                 sessionId,
-                messageId
-                // userId removed - not a parameter of this method
+                messageId,
+                userId  // Pass userId for provider-aware filtering
             );
 
             const { aggregatedToolCalls, conversationalResponse } = processedResult;
@@ -483,8 +490,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 const actionPlan: ActionPlan = await plannerService.generatePlanWithStepAnnouncements(
                   data.content,  // Full user message
                   toolsForPlanning,
-                  sessionId, 
-                  messageId
+                  sessionId,
+                  messageId,
+                  userId  // Pass userId for provider-aware filtering
                 );
 
                 if (actionPlan && actionPlan.length > 0) {

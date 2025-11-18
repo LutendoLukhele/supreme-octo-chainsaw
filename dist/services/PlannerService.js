@@ -16,7 +16,7 @@ const logger = winston_1.default.createLogger({
     transports: [new winston_1.default.transports.Console()],
 });
 class PlannerService extends events_1.EventEmitter {
-    constructor(groqApiKey, maxTokens, toolConfigManager) {
+    constructor(groqApiKey, maxTokens, toolConfigManager, providerAwareFilter) {
         super();
         logger.info('PlannerService constructor called', {
             apiKeyProvided: !!groqApiKey,
@@ -38,14 +38,15 @@ class PlannerService extends events_1.EventEmitter {
         });
         this.maxTokens = maxTokens;
         this.toolConfigManager = toolConfigManager;
+        this.providerAwareFilter = providerAwareFilter;
         logger.info('PlannerService initialized with Groq', {
             model: PlannerService.MODEL,
             maxTokens,
             apiKeyValid: true
         });
     }
-    async generatePlanWithStepAnnouncements(userInput, toolCalls, sessionId, messageId) {
-        const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId);
+    async generatePlanWithStepAnnouncements(userInput, toolCalls, sessionId, messageId, userId) {
+        const plan = await this.generatePlan(userInput, toolCalls, sessionId, messageId, userId);
         if (plan && plan.length > 0) {
             plan.forEach((step, index) => {
                 step.stepNumber = index + 1;
@@ -294,9 +295,10 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
         };
         return friendlyNames[toolName] || toolName.replace(/_/g, ' ');
     }
-    async generatePlan(userInput, identifiedToolCalls, sessionId, clientMessageId) {
+    async generatePlan(userInput, identifiedToolCalls, sessionId, clientMessageId, userId) {
         logger.info('PlannerService: Generating action plan using structured output', {
             sessionId,
+            userId,
             userInputLength: userInput.length,
             numIdentifiedTools: identifiedToolCalls.length,
             identifiedToolNames: identifiedToolCalls.map(tc => tc.name)
@@ -309,7 +311,21 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
             isFinal: true,
         };
         this.emit('send_chunk', sessionId, plannerStatus);
-        const availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
+        let availableTools;
+        if (this.providerAwareFilter && userId) {
+            logger.info('PlannerService: Using provider-aware tool filtering', { userId });
+            const filteredTools = await this.providerAwareFilter.getAvailableToolsForUser(userId);
+            availableTools = filteredTools.map(tool => ({
+                name: tool.name,
+                description: tool.description,
+                category: tool.category,
+                parameters: tool.parameters
+            }));
+        }
+        else {
+            logger.warn('PlannerService: Provider-aware filtering not available, using all tools');
+            availableTools = this.toolConfigManager.getToolDefinitionsForPlanner();
+        }
         const toolDefinitionsJson = JSON.stringify(availableTools, null, 2);
         let identifiedToolsPromptSection = "No tools pre-identified.";
         if (identifiedToolCalls.length > 0) {

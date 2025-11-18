@@ -271,8 +271,9 @@ export class ToolConfigManager {
 
   /**
    * Get all tools from all categories
+   * Public to allow provider-aware filtering
    */
-  private getAllTools(): ToolConfig[] {
+  public getAllTools(): ToolConfig[] {
     const allTools: ToolConfig[] = [];
     for (const tools of Object.values(this.toolConfigs)) {
       if (Array.isArray(tools)) {

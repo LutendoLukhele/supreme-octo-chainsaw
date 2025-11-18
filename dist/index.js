@@ -52,6 +52,7 @@ const firebase_1 = require("./firebase");
 const redis = new ioredis_1.default(config_1.CONFIG.REDIS_URL);
 const ConversationService_1 = require("./services/conversation/ConversationService");
 const ToolOrchestrator_1 = require("./services/tool/ToolOrchestrator");
+const ProviderAwareToolFilter_1 = require("./services/tool/ProviderAwareToolFilter");
 const StreamManager_1 = require("./services/stream/StreamManager");
 const NangoService_1 = require("./services/NangoService");
 const FollowUpService_1 = require("./services/FollowUpService");
@@ -59,6 +60,7 @@ const ToolConfigManager_1 = require("./services/tool/ToolConfigManager");
 const PlannerService_1 = require("./services/PlannerService");
 const action_launcher_service_1 = require("./action-launcher.service");
 const RunManager_1 = require("./services/tool/RunManager");
+const serverless_1 = require("@neondatabase/serverless");
 const BeatEngine_1 = require("./BeatEngine");
 const DataDependencyService_1 = require("./services/data/DataDependencyService");
 const Resolver_1 = require("./services/data/Resolver");
@@ -84,13 +86,15 @@ const logger = winston_1.default.createLogger({
 });
 const groqClient = new groq_sdk_1.default({ apiKey: config_1.CONFIG.GROQ_API_KEY });
 const toolConfigManager = new ToolConfigManager_1.ToolConfigManager();
+const sql = (0, serverless_1.neon)(process.env.DATABASE_URL);
+const providerAwareFilter = new ProviderAwareToolFilter_1.ProviderAwareToolFilter(toolConfigManager, sql);
 const nangoService = new NangoService_1.NangoService();
 const streamManager = new StreamManager_1.StreamManager({ logger });
 const dataDependencyService = new DataDependencyService_1.DataDependencyService();
 const resolver = new Resolver_1.Resolver(dataDependencyService);
 const followUpService = new FollowUpService_1.FollowUpService(groqClient, config_1.CONFIG.MODEL_NAME, config_1.CONFIG.MAX_TOKENS);
 const toolOrchestrator = new ToolOrchestrator_1.ToolOrchestrator({ logger, nangoService, toolConfigManager, dataDependencyService, resolver, redisClient: redis });
-const plannerService = new PlannerService_1.PlannerService(config_1.CONFIG.GROQ_API_KEY, config_1.CONFIG.MAX_TOKENS, toolConfigManager);
+const plannerService = new PlannerService_1.PlannerService(config_1.CONFIG.GROQ_API_KEY, config_1.CONFIG.MAX_TOKENS, toolConfigManager, providerAwareFilter);
 const beatEngine = new BeatEngine_1.BeatEngine(toolConfigManager);
 const historyService = new HistoryService_1.HistoryService(redis);
 const conversationService = new ConversationService_1.ConversationService({
@@ -102,7 +106,7 @@ const conversationService = new ConversationService_1.ConversationService({
     logger: logger,
     client: groqClient,
     tools: [],
-});
+}, providerAwareFilter);
 const actionLauncherService = new action_launcher_service_1.ActionLauncherService(conversationService, toolConfigManager, beatEngine);
 const planExecutorService = new PlanExecutorService_1.PlanExecutorService(actionLauncherService, toolOrchestrator, streamManager, toolConfigManager, groqClient, plannerService, followUpService, historyService);
 const sessionState = storage.create({ dir: 'sessions' });
@@ -361,7 +365,7 @@ wss.on('connection', (ws, req) => {
                 catch (error) {
                     logger.warn('Failed to record user message in history', { error: error.message });
                 }
-                const processedResult = await conversationService.processMessageAndAggregateResults(data.content, sessionId, messageId);
+                const processedResult = await conversationService.processMessageAndAggregateResults(data.content, sessionId, messageId, userId);
                 const { aggregatedToolCalls, conversationalResponse } = processedResult;
                 if (conversationalResponse?.trim()) {
                     await streamText(sessionId, messageId, conversationalResponse);
@@ -375,7 +379,7 @@ wss.on('connection', (ws, req) => {
                     await sessionState.setItem(sessionId, state);
                     streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
                     const toolsForPlanning = aggregatedToolCalls.filter(t => t.name !== 'planParallelActions');
-                    const actionPlan = await plannerService.generatePlanWithStepAnnouncements(data.content, toolsForPlanning, sessionId, messageId);
+                    const actionPlan = await plannerService.generatePlanWithStepAnnouncements(data.content, toolsForPlanning, sessionId, messageId, userId);
                     if (actionPlan && actionPlan.length > 0) {
                         await actionLauncherService.processActionPlan(actionPlan, sessionId, userId, messageId, toolOrchestrator, run);
                         try {
