@@ -13,6 +13,7 @@ export interface ToolResult {
   toolName: string;
   data: any;
   error?: string;
+  errorDetails?: any;
 }
 
 export interface ToolExecutionStep {

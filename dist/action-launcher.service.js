@@ -239,11 +239,15 @@ class ActionLauncherService extends events_1.EventEmitter {
             action.result = result.data;
             action.status = result.status === 'success' ? 'completed' : 'failed';
             action.error = result.status === 'failed' ? result.error : undefined;
+            if (result.errorDetails) {
+                action.errorDetails = result.errorDetails;
+            }
             logger.info('ActionLauncher: Action completed with result', {
                 sessionId,
                 actionId,
                 status: action.status,
-                result: JSON.stringify(action.result, null, 2)
+                result: JSON.stringify(action.result, null, 2),
+                errorDetails: result.errorDetails || null
             });
             return action;
         }

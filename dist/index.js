@@ -514,29 +514,58 @@ wss.on('connection', (ws, req) => {
                         logger.info('Single action requires user input before execution.', { sessionId });
                     }
                 }
-                else if (!conversationalResponse) {
-                    await streamText(sessionId, messageId, "I'm not sure how to help with that. Could you rephrase?");
-                }
                 const finalRunState = (await sessionState.getItem(sessionId))?.activeRun;
                 if (finalRunState && finalRunState.status === 'completed' && !finalRunState.assistantResponse) {
-                    logger.info('Auto-execution complete, generating final context-aware response.', { sessionId, runId: finalRunState.id });
+                    logger.info('Auto-execution complete, generating final context-aware response.', {
+                        sessionId,
+                        runId: finalRunState.id,
+                        planLength: finalRunState.toolExecutionPlan.length
+                    });
                     finalRunState.toolExecutionPlan.forEach(step => {
                         if (step.status === 'completed' && step.result) {
+                            logger.info('Adding tool result to history', {
+                                stepId: step.stepId,
+                                toolName: step.toolCall.name
+                            });
                             conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
                         }
                     });
+                    logger.info('Requesting final summary from LLM', { sessionId });
                     const finalResponseResult = await conversationService.processMessageAndAggregateResults(null, sessionId, (0, uuid_1.v4)());
+                    logger.info('Final response result received', {
+                        sessionId,
+                        hasResponse: !!finalResponseResult.conversationalResponse,
+                        responseLength: finalResponseResult.conversationalResponse?.length || 0
+                    });
                     if (finalResponseResult.conversationalResponse?.trim()) {
                         await streamText(sessionId, (0, uuid_1.v4)(), finalResponseResult.conversationalResponse);
                         try {
                             await historyService.recordAssistantMessage(userId, sessionId, finalResponseResult.conversationalResponse);
+                            logger.info('Final response recorded in history', { sessionId });
                         }
                         catch (error) {
                             logger.warn('Failed to record assistant message', { error: error.message });
                         }
                         finalRunState.assistantResponse = finalResponseResult.conversationalResponse;
                         await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
+                        logger.info('Run state updated with assistant response', { sessionId });
                     }
+                    else {
+                        logger.warn('No final conversational response generated after tool execution', {
+                            sessionId,
+                            runId: finalRunState.id
+                        });
+                    }
+                }
+                else if (!conversationalResponse && executableToolCount === 0 && !isPlanRequest) {
+                    logger.warn('No tools or conversational response generated for user message.', {
+                        sessionId,
+                        userMessage: data.content,
+                        hasFinalRunState: !!finalRunState,
+                        finalRunStatus: finalRunState?.status,
+                        hasAssistantResponse: !!finalRunState?.assistantResponse
+                    });
+                    await streamText(sessionId, messageId, "I'm not sure how to help with that. Could you rephrase or provide more details?");
                 }
                 return;
             }

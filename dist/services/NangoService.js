@@ -104,7 +104,14 @@ class NangoService {
                 error: error.response?.data?.message || error.message,
                 actionName,
             });
-            throw new Error(error.response?.data?.message || `Request failed with status code ${error.response?.status}`);
+            const enhancedError = new Error(error.response?.data?.message || `Request failed with status code ${error.response?.status}`);
+            enhancedError.nangoErrorDetails = {
+                actionName,
+                statusCode: error.response?.status,
+                nangoPayload: error.response?.data || null,
+                timestamp: new Date().toISOString()
+            };
+            throw enhancedError;
         }
     }
     async triggerSalesforceAction(providerConfigKey, connectionId, actionPayload) {
@@ -149,7 +156,14 @@ class NangoService {
                 error: error.response?.data || error.message,
                 actionName
             });
-            throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+            const enhancedError = new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+            enhancedError.nangoErrorDetails = {
+                actionName,
+                statusCode: error.response?.status,
+                nangoPayload: error.response?.data || null,
+                timestamp: new Date().toISOString()
+            };
+            throw enhancedError;
         }
     }
     async sendEmail(providerConfigKey, connectionId, payload) {
@@ -198,7 +212,14 @@ class NangoService {
                 error: error.response?.data || error.message,
                 actionName
             });
-            throw new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+            const enhancedError = new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+            enhancedError.nangoErrorDetails = {
+                actionName,
+                statusCode: error.response?.status,
+                nangoPayload: error.response?.data || null,
+                timestamp: new Date().toISOString()
+            };
+            throw enhancedError;
         }
     }
     async fetchCalendarEvents(providerConfigKey, connectionId, args) {

@@ -34,5 +34,11 @@ USER CONTEXT:
 - Initial request: {{USER_INITIAL_QUERY}}
 - Current message: {{USER_CURRENT_MESSAGE}}
 
+**IMPORTANT**: If the current message is empty or blank, this means tools were just executed to fulfill the initial request. In this case:
+1. Review the tool results in the conversation history
+2. Provide a warm, conversational summary of what was accomplished
+3. Highlight key findings or next steps if relevant
+4. DO NOT call any tools - just summarize the results
+
 Now, please respond.
 `;
