@@ -53,6 +53,34 @@ export class ActionLauncherService extends EventEmitter {
       planIds: actionPlan.map(p => ({ id: p.id, tool: p.tool }))
     });
 
+    // ---------------------------------------------------------------------
+    // 🔥 MASSIVE DEBUG BLOCK: WHAT ARGUMENTS DO WE *ACTUALLY* HAVE HERE?
+    // ---------------------------------------------------------------------
+    try {
+        console.log("=======================================================");
+        console.log("🔥 ACTIONLAUNCHER: POST-PLAN ARGUMENT STATE");
+        console.log("=======================================================");
+
+        for (const planItem of actionPlan) {
+            console.log("🔧 Tool:", planItem.tool);
+            console.log("🆔 Plan Item ID:", planItem.id);
+
+            // Safe-print of arguments
+            try {
+                console.log("📦 Arguments:", JSON.stringify(planItem.arguments, null, 2));
+            } catch (err) {
+                console.log("📦 Arguments (raw):", planItem.arguments);
+            }
+
+            console.log("-------------------------------------------------------");
+        }
+
+        console.log("🔥 END OF ACTIONLAUNCHER DEBUG DUMP");
+        console.log("=======================================================\n\n");
+    } catch (e) {
+        console.log("🔥 ACTIONLAUNCHER DEBUG FAILED:", e);
+    }
+    // ---------------------------------------------------------------------
     const clientActionsToConfirm: ActiveAction[] = [];
     const clientActionsNeedingParams: ActiveAction[] = [];
 
@@ -110,6 +138,8 @@ export class ActionLauncherService extends EventEmitter {
         }
       }
     }
+
+
 
     if (clientActionsNeedingParams.length > 0) {
       const analysisText = `I need a bit more information for the '${clientActionsNeedingParams[0].toolDisplayName}' action.`;
@@ -408,6 +438,8 @@ export class ActionLauncherService extends EventEmitter {
       action: '',
       object: ''
     };
+
+    
 
     let sessionActionMap = this.activeActions.get(details.sessionId);
     if (!sessionActionMap) {

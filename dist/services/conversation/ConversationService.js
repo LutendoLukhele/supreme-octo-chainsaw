@@ -208,6 +208,12 @@ class ConversationService extends events_1.EventEmitter {
                     if (tc.id && tc.function.name) {
                         try {
                             if (!aggregatedToolCallsOutput.some(existing => existing.id === tc.id)) {
+                                try {
+                                    console.log("🔥 RAW_TOOLCALL_FROM_LLM:", JSON.stringify(tc, null, 2));
+                                }
+                                catch (e) {
+                                    console.log("🔥 RAW_TOOLCALL_FROM_LLM (stringify failed):", tc);
+                                }
                                 aggregatedToolCallsOutput.push({
                                     id: tc.id,
                                     name: tc.function.name,

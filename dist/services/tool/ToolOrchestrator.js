@@ -67,17 +67,27 @@ class ToolOrchestrator extends BaseService_1.BaseService {
         }
     }
     _normalizeFetchEntityArgs(args) {
-        const wrap = (value) => ({ type: value ?? null, nullable: value == null });
+        const wrapIfPresent = (value) => {
+            if (value === undefined)
+                return undefined;
+            return { type: value, nullable: value == null };
+        };
+        const identifierWrapped = (() => {
+            if (args.identifier === 'all')
+                return { type: 'all', nullable: false };
+            return wrapIfPresent(args.identifier);
+        })();
+        const filters = (args.filters && Object.keys(args.filters).length > 0) ? args.filters : undefined;
         return {
             operation: args.operation || 'fetch',
             entityType: args.entityType,
-            identifier: args.identifier === 'all' ? { type: 'all', nullable: false } : wrap(args.identifier),
-            identifierType: wrap(args.identifierType),
-            timeFrame: wrap(args.timeFrame),
-            filters: args.filters ?? {},
-            format: wrap(args.format),
-            countOnly: { type: args.countOnly ?? false, nullable: false },
-            limit: wrap(args.limit)
+            identifier: identifierWrapped,
+            identifierType: wrapIfPresent(args.identifierType),
+            timeFrame: wrapIfPresent(args.timeFrame),
+            filters: filters,
+            format: wrapIfPresent(args.format),
+            countOnly: { type: !!args.countOnly, nullable: false },
+            limit: wrapIfPresent(args.limit)
         };
     }
     async resolveConnectionId(userId, providerConfigKey) {

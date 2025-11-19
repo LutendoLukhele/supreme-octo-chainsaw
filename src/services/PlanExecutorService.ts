@@ -264,6 +264,15 @@ Output ONLY valid JSON with corrected arguments. No explanation.`;
             toolName: step.toolCall.name,
             arguments: step.toolCall.arguments,
           };
+          
+          // DEBUG: action about to be stored/enqueued (immediately before DB write / enqueue)
+          try {
+            console.log("🔥 ACTION_BEFORE_STORE:", JSON.stringify(payload, null, 2));
+          } catch (e) {
+            console.log("🔥 ACTION_BEFORE_STORE (raw):", payload);
+          }
+
+
 
           logger.info('Executing tool', {
             stepId: step.stepId,

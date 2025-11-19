@@ -413,6 +413,12 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
                     totalSteps: responseObject.plan.length
                 };
             });
+            try {
+                console.log("🔥 PLANNER_CREATED_STEP:", JSON.stringify(actionPlan, null, 2));
+            }
+            catch (e) {
+                console.log("🔥 PLANNER_CREATED_STEP (raw):", actionPlan);
+            }
             logger.info('PlannerService: Complete plan with validated tools', {
                 sessionId,
                 planLength: actionPlan.length,

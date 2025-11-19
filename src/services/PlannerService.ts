@@ -545,6 +545,14 @@ public async generatePlan(
       };
     });
 
+    // DEBUG: plan step created by planner (before persisting/hand-off)
+    try {
+      console.log("🔥 PLANNER_CREATED_STEP:", JSON.stringify(actionPlan, null, 2));
+    } catch (e) {
+      console.log("🔥 PLANNER_CREATED_STEP (raw):", actionPlan);
+    }
+
+
     logger.info('PlannerService: Complete plan with validated tools', {
       sessionId,
       planLength: actionPlan.length,

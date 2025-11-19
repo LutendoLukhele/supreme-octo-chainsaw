@@ -683,6 +683,39 @@ wss.on('connection', (ws, req) => {
                         interpretiveResponse = response_parser_service_1.responseParserService.buildFallbackResponse(combinedContent, mode, groqResponse, parseError?.message || 'Failed to parse Groq JSON');
                     }
                     interpretiveResponse.metadata.processingTimeMs = Date.now() - startTime;
+                    if (interpretiveResponse.hero?.headline) {
+                        send('title_generated', { title: interpretiveResponse.hero.headline });
+                    }
+                    if (interpretiveResponse.hero?.subheadline) {
+                        send('subtitle_generated', { subtitle: interpretiveResponse.hero.subheadline });
+                    }
+                    if (interpretiveResponse.hero?.imageUrl) {
+                        send('hero_image_set', { hero: interpretiveResponse.hero });
+                    }
+                    for (const segment of interpretiveResponse.segments || []) {
+                        send('segment_added', { segment });
+                    }
+                    for (const source of interpretiveResponse.sources || []) {
+                        send('source_added', { source });
+                    }
+                    const imageSegments = (interpretiveResponse.segments || []).filter(s => s.type === 'image');
+                    for (const imageSegment of imageSegments) {
+                        send('image_added', { image: imageSegment });
+                    }
+                    if (Array.isArray(interpretiveResponse.hero?.imageCandidates)) {
+                        for (const imageCandidate of interpretiveResponse.hero.imageCandidates) {
+                            send('image_added', { image: imageCandidate });
+                        }
+                    }
+                    const imageCount = imageSegments.length + (interpretiveResponse.hero?.imageCandidates?.length || 0);
+                    send('metadata_update', {
+                        metadata: {
+                            segmentCount: interpretiveResponse.segments?.length || 0,
+                            sourceCount: interpretiveResponse.sources?.length || 0,
+                            imageCount,
+                            processingTimeMs: interpretiveResponse.metadata.processingTimeMs
+                        }
+                    });
                     const enrichmentDefs = [
                         {
                             key: 'cultural',
@@ -703,6 +736,8 @@ wss.on('connection', (ws, req) => {
                             const enrichPrompt = prompt_generator_service_1.promptGeneratorService.generateEnrichmentPrompt(def.key, query, entities);
                             const resp = await groq_service_1.groqService.executeSearch(enrichPrompt, { searchSettings: def.searchSettings });
                             const parsed = response_parser_service_1.responseParserService.parseEnrichmentResponse(resp.content);
+                            let newSourcesCount = 0;
+                            let newSegmentsCount = 0;
                             const localToGlobal = new Map();
                             parsed.sources.forEach((s, idx) => {
                                 const exIndex = interpretiveResponse.sources.findIndex((e) => e.url === s.url);
@@ -710,8 +745,11 @@ wss.on('connection', (ws, req) => {
                                     localToGlobal.set(idx + 1, exIndex + 1);
                                 }
                                 else {
-                                    interpretiveResponse.sources.push({ ...s, index: interpretiveResponse.sources.length + 1 });
+                                    const newSource = { ...s, index: interpretiveResponse.sources.length + 1 };
+                                    interpretiveResponse.sources.push(newSource);
                                     localToGlobal.set(idx + 1, interpretiveResponse.sources.length);
+                                    send('source_added', { source: newSource });
+                                    newSourcesCount++;
                                 }
                             });
                             parsed.segments.forEach((seg) => {
@@ -722,8 +760,18 @@ wss.on('connection', (ws, req) => {
                                     seg.sourceIndex = localToGlobal.get(seg.sourceIndex) ?? seg.sourceIndex;
                                 }
                                 interpretiveResponse.segments.push(seg);
+                                send('segment_added', { segment: seg });
+                                newSegmentsCount++;
+                                if (seg.type === 'image') {
+                                    send('image_added', { image: seg });
+                                }
                             });
-                            send('enrichment_complete', { key: def.key, segmentsAdded: parsed.segments.length, sourcesAdded: parsed.sources.length });
+                            if (Array.isArray(parsed.imageCandidates)) {
+                                for (const imageCandidate of parsed.imageCandidates) {
+                                    send('image_added', { image: imageCandidate });
+                                }
+                            }
+                            send('enrichment_complete', { key: def.key, segmentsAdded: newSegmentsCount, sourcesAdded: newSourcesCount });
                         }
                         catch (enrichErr) {
                             send('enrichment_error', { key: def.key, message: enrichErr?.message || 'enrichment failed' });
@@ -745,10 +793,27 @@ wss.on('connection', (ws, req) => {
                                 context: interpretiveResponse,
                             });
                             interpretiveResponse.artifact = artifact;
-                            send('artifact_generated', { hasArtifact: true });
+                            send('artifact_generated', { hasArtifact: true, artifact });
                         }
                     }
-                    send('complete', { requestId, status: 'complete', payload: interpretiveResponse });
+                    const finalImageCount = (interpretiveResponse.segments || []).filter(s => s.type === 'image').length +
+                        (interpretiveResponse.hero?.imageCandidates?.length || 0);
+                    send('metadata_update', {
+                        metadata: {
+                            segmentCount: interpretiveResponse.metadata.segmentCount,
+                            sourceCount: interpretiveResponse.metadata.sourceCount,
+                            imageCount: finalImageCount,
+                            processingTimeMs: Date.now() - startTime,
+                            groqModel: interpretiveResponse.metadata.groqModel,
+                            groqTokens: interpretiveResponse.metadata.groqTokens
+                        }
+                    });
+                    send('complete', {
+                        requestId,
+                        status: 'complete',
+                        responseId: interpretiveResponse.id,
+                        timestamp: interpretiveResponse.timestamp
+                    });
                 }
                 catch (err) {
                     send('error', { requestId, status: 'error', message: err?.message || 'Unknown error' });
@@ -798,142 +863,6 @@ wss.on('connection', (ws, req) => {
                 }
                 catch (err) {
                     streamManager.sendChunk(sessionIdForWS, { type: 'error', messageId: wsMessageId, content: { code: 'INTERPRET_ERROR', message: err?.message || 'Unknown error' }, isFinal: true });
-                }
-                return;
-            }
-            if (data.type === 'interpret_stream' && data.content) {
-                const { query, sessionId: incomingSessionId, documentIds, enableArtifacts, searchSettings } = data.content || {};
-                if (!query || typeof query !== 'string') {
-                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event: 'error', data: { message: 'Query is required' } });
-                    return;
-                }
-                const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
-                const startTime = Date.now();
-                const send = (event, dataObj) => {
-                    streamManager.sendChunk(sessionId, { type: 'interpret_event', event, data: dataObj });
-                };
-                try {
-                    send('start', { requestId, status: 'loading' });
-                    const sessionContext = null;
-                    const docCtx = Array.isArray(documentIds) && documentIds.length
-                        ? await document_service_1.documentService.getDocuments(documentIds)
-                        : [];
-                    const { mode, entities } = await router_service_1.routerService.detectIntent(query);
-                    const groqPrompt = prompt_generator_service_1.promptGeneratorService.generatePrompt(mode, query, entities, {
-                        sessionContext,
-                        documentContext: docCtx,
-                        enableArtifacts,
-                    });
-                    let combinedContent = '';
-                    let reasoning = '';
-                    let model = '';
-                    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-                    try {
-                        const stream = groq_service_1.groqService.executeSearchStream(groqPrompt, { searchSettings });
-                        for await (const chunk of stream) {
-                            if (chunk.model)
-                                model = chunk.model;
-                            if ('usage' in chunk && chunk.usage) {
-                                usage = { ...usage, ...chunk.usage };
-                            }
-                            const choice = chunk.choices?.[0];
-                            const delta = choice?.delta ?? {};
-                            if (typeof delta?.content === 'string' && delta.content.length) {
-                                combinedContent += delta.content;
-                                send('token', { chunk: delta.content });
-                            }
-                            if (typeof delta?.reasoning === 'string' && delta.reasoning.length) {
-                                reasoning += delta.reasoning;
-                                send('reasoning', { text: delta.reasoning });
-                            }
-                        }
-                    }
-                    catch (streamErr) {
-                        const resp = await groq_service_1.groqService.executeSearch(groqPrompt, { searchSettings });
-                        combinedContent = resp.content;
-                        model = resp.model;
-                        usage = resp.usage;
-                        reasoning = resp.reasoning || '';
-                    }
-                    let groqResponse = { content: combinedContent, model, usage, reasoning };
-                    let interpretiveResponse;
-                    try {
-                        interpretiveResponse = response_parser_service_1.responseParserService.parseGroqResponse(combinedContent, mode, groqResponse);
-                    }
-                    catch (parseError) {
-                        send('warning', { type: 'parse_error', message: parseError?.message || 'Failed to parse Groq JSON' });
-                        interpretiveResponse = response_parser_service_1.responseParserService.buildFallbackResponse(combinedContent, mode, groqResponse, parseError?.message || 'Failed to parse Groq JSON');
-                    }
-                    interpretiveResponse.metadata.processingTimeMs = Date.now() - startTime;
-                    const enrichmentDefs = [
-                        {
-                            key: 'cultural',
-                            searchSettings: { include_domains: ['*.museum', '*.gallery', '*.art', 'cosmos.co', 'www.metmuseum.org'] }
-                        },
-                        {
-                            key: 'social',
-                            searchSettings: { include_domains: ['*.substack.com', 'www.reddit.com', 'www.threads.net', 'www.tumblr.com'] }
-                        },
-                        {
-                            key: 'visual',
-                            searchSettings: { include_domains: ['cosmos.co', '*.gallery', 'www.metmuseum.org', 'www.moma.org', 'www.wikiart.org'] }
-                        },
-                    ];
-                    for (const def of enrichmentDefs) {
-                        send('enrichment_start', { key: def.key });
-                        try {
-                            const enrichPrompt = prompt_generator_service_1.promptGeneratorService.generateEnrichmentPrompt(def.key, query, entities);
-                            const resp = await groq_service_1.groqService.executeSearch(enrichPrompt, { searchSettings: def.searchSettings });
-                            const parsed = response_parser_service_1.responseParserService.parseEnrichmentResponse(resp.content);
-                            const localToGlobal = new Map();
-                            parsed.sources.forEach((s, idx) => {
-                                const exIndex = interpretiveResponse.sources.findIndex((e) => e.url === s.url);
-                                if (exIndex >= 0) {
-                                    localToGlobal.set(idx + 1, exIndex + 1);
-                                }
-                                else {
-                                    interpretiveResponse.sources.push({ ...s, index: interpretiveResponse.sources.length + 1 });
-                                    localToGlobal.set(idx + 1, interpretiveResponse.sources.length);
-                                }
-                            });
-                            parsed.segments.forEach((seg) => {
-                                if (seg.type === 'context' && Array.isArray(seg.sourceIndices)) {
-                                    seg.sourceIndices = seg.sourceIndices.map((i) => localToGlobal.get(i) ?? i);
-                                }
-                                if (seg.type === 'quote' && typeof seg.sourceIndex === 'number') {
-                                    seg.sourceIndex = localToGlobal.get(seg.sourceIndex) ?? seg.sourceIndex;
-                                }
-                                interpretiveResponse.segments.push(seg);
-                            });
-                            send('enrichment_complete', { key: def.key, segmentsAdded: parsed.segments.length, sourcesAdded: parsed.sources.length });
-                        }
-                        catch (enrichErr) {
-                            send('enrichment_error', { key: def.key, message: enrichErr?.message || 'enrichment failed' });
-                        }
-                    }
-                    interpretiveResponse.sources = interpretiveResponse.sources
-                        .filter((s, i, self) => self.findIndex((x) => x.url === s.url) === i)
-                        .map((s, i) => ({ ...s, index: i + 1 }));
-                    interpretiveResponse.metadata.segmentCount = interpretiveResponse.segments.length;
-                    interpretiveResponse.metadata.sourceCount = interpretiveResponse.sources.length;
-                    if (enableArtifacts) {
-                        const lower = query.toLowerCase();
-                        const should = ['write code', 'generate script', 'create function', 'analyze data', 'visualize', 'plot', 'chart', 'calculate']
-                            .some(k => lower.includes(k));
-                        if (should) {
-                            const artifact = await artifact_generator_service_1.artifactGeneratorService.generateCodeArtifact({
-                                prompt: query,
-                                language: 'python',
-                                context: interpretiveResponse,
-                            });
-                            interpretiveResponse.artifact = artifact;
-                            send('artifact_generated', { hasArtifact: true });
-                        }
-                    }
-                    send('complete', { requestId, status: 'complete', payload: interpretiveResponse });
-                }
-                catch (err) {
-                    send('error', { requestId, status: 'error', message: err?.message || 'Unknown error' });
                 }
                 return;
             }

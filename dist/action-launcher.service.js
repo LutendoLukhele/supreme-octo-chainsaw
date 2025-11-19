@@ -27,6 +27,27 @@ class ActionLauncherService extends events_1.EventEmitter {
             numItems: actionPlan.length,
             planIds: actionPlan.map(p => ({ id: p.id, tool: p.tool }))
         });
+        try {
+            console.log("=======================================================");
+            console.log("🔥 ACTIONLAUNCHER: POST-PLAN ARGUMENT STATE");
+            console.log("=======================================================");
+            for (const planItem of actionPlan) {
+                console.log("🔧 Tool:", planItem.tool);
+                console.log("🆔 Plan Item ID:", planItem.id);
+                try {
+                    console.log("📦 Arguments:", JSON.stringify(planItem.arguments, null, 2));
+                }
+                catch (err) {
+                    console.log("📦 Arguments (raw):", planItem.arguments);
+                }
+                console.log("-------------------------------------------------------");
+            }
+            console.log("🔥 END OF ACTIONLAUNCHER DEBUG DUMP");
+            console.log("=======================================================\n\n");
+        }
+        catch (e) {
+            console.log("🔥 ACTIONLAUNCHER DEBUG FAILED:", e);
+        }
         const clientActionsToConfirm = [];
         const clientActionsNeedingParams = [];
         for (const planItem of actionPlan) {

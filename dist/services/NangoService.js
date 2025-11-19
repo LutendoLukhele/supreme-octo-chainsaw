@@ -137,6 +137,7 @@ class NangoService {
         });
         try {
             await this.warmConnection(providerConfigKey, connectionId);
+            console.log("🔥 FINAL TOOL PAYLOAD SENT TO NANGO:", JSON.stringify(actionPayload, null, 2));
             const response = await axios_1.default.post('https://api.nango.dev/action/trigger', {
                 action_name: actionName,
                 input: actionPayload

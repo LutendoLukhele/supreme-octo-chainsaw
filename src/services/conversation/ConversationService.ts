@@ -279,6 +279,14 @@ export class ConversationService extends EventEmitter {
                         try {
                             // Check for duplicates before adding
                             if (!aggregatedToolCallsOutput.some(existing => existing.id === tc.id)) {
+                                // DEBUG: raw toolcall from LLM (before any manipulation)
+                                try {
+                                    console.log("🔥 RAW_TOOLCALL_FROM_LLM:", JSON.stringify(tc, null, 2));
+                                } catch (e) {
+                                    console.log("🔥 RAW_TOOLCALL_FROM_LLM (stringify failed):", tc);
+                                }
+
+
                                 aggregatedToolCallsOutput.push({
                                     id: tc.id,
                                     name: tc.function.name,
