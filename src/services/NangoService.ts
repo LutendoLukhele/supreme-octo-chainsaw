@@ -195,6 +195,12 @@ async triggerSalesforceAction(
     // Ensure connection is warm before executing
     await this.warmConnection(providerConfigKey, connectionId);
     
+    console.log(
+    "🔥 FINAL TOOL PAYLOAD SENT TO NANGO:",
+    JSON.stringify(actionPayload, null, 2)
+);
+
+
     // Use the exact same pattern as fetchEmails
     const response = await axios.post(
       'https://api.nango.dev/action/trigger',
