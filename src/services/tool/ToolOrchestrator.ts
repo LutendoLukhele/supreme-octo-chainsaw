@@ -84,19 +84,39 @@ export class ToolOrchestrator extends BaseService {
     }
 
     private _normalizeFetchEntityArgs(args: Record<string, any>): Record<string, any> {
-        const wrap = (value: any) => ({ type: value ?? null, nullable: value == null });
-        return {
-            operation: args.operation || 'fetch',
-            entityType: args.entityType,
-            identifier: args.identifier === 'all' ? { type: 'all', nullable: false } : wrap(args.identifier),
-            identifierType: wrap(args.identifierType),
-            timeFrame: wrap(args.timeFrame),
-            filters: args.filters ?? {},
-            format: wrap(args.format),
-            countOnly: { type: args.countOnly ?? false, nullable: false },
-            limit: wrap(args.limit)
-        };
-    }
+    // Helper: wrap only when a value was actually provided.
+    const wrapIfPresent = (value: any) => {
+        if (value === undefined) return undefined; // do not include the wrapper if nothing was provided
+        return { type: value, nullable: value == null };
+    };
+
+    // Special-casing identifier='all' to be explicit
+    const identifierWrapped = (() => {
+        if (args.identifier === 'all') return { type: 'all', nullable: false };
+        return wrapIfPresent(args.identifier);
+    })();
+
+    // Filters: if empty object or undefined we prefer undefined so downstream code can treat it as absent
+    const filters = (args.filters && Object.keys(args.filters).length > 0) ? args.filters : undefined;
+
+    return {
+        operation: args.operation || 'fetch',
+        // entityType must be a plain string (don't wrap it)
+        entityType: args.entityType,
+        // identifier only present when provided (and when 'all' we give explicit wrapper)
+        identifier: identifierWrapped,
+        // identifierType only when present
+        identifierType: wrapIfPresent(args.identifierType),
+        // timeFrame, format, limit: keep wrappers only if caller provided them
+        timeFrame: wrapIfPresent(args.timeFrame),
+        filters: filters,
+        format: wrapIfPresent(args.format),
+        // countOnly is a boolean; guarantee a plain object shape that your action expects
+        countOnly: { type: !!args.countOnly, nullable: false },
+        limit: wrapIfPresent(args.limit)
+    };
+}
+
 
     private async resolveConnectionId(userId: string, providerConfigKey: string): Promise<string | null> {
         this.logger.info(`Querying database for connectionId`, { userId, providerConfigKey });
