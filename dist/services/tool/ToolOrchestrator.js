@@ -30,6 +30,7 @@ class ToolOrchestrator extends BaseService_1.BaseService {
         this.logger.info(`Executing tool: '${toolName}'`, { executionId, toolName, userId: toolCall.userId });
         try {
             const toolCallToExecute = { ...toolCall };
+            const originalArgs = toolCall.arguments?.input || toolCall.arguments || {};
             if (toolName === 'fetch_entity') {
                 this.logger.info('Applying fetch_entity normalization logic.');
                 toolCallToExecute.arguments = this._normalizeFetchEntityArgs(originalArgs);

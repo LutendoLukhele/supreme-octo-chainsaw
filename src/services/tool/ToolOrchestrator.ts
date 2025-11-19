@@ -39,6 +39,7 @@ export class ToolOrchestrator extends BaseService {
 
         try {
             const toolCallToExecute = { ...toolCall };
+            const originalArgs = toolCall.arguments?.input || toolCall.arguments || {};
 
             if (toolName === 'fetch_entity') {
                 this.logger.info('Applying fetch_entity normalization logic.');

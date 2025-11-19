@@ -68,7 +68,11 @@ const groqClient = new Groq({ apiKey: CONFIG.GROQ_API_KEY });
 const toolConfigManager = new ToolConfigManager();
 
 // Initialize database connection for provider-aware filtering
-const sql = neon(process.env.DATABASE_URL!);
+if (!process.env.DATABASE_URL) {
+    logger.error("FATAL: DATABASE_URL environment variable is not set. The application cannot start without it.");
+    throw new Error("DATABASE_URL environment variable is not set.");
+}
+const sql = neon(process.env.DATABASE_URL);
 const providerAwareFilter = new ProviderAwareToolFilter(toolConfigManager, sql);
 
 const nangoService = new NangoService();

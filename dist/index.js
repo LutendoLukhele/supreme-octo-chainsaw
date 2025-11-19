@@ -86,6 +86,10 @@ const logger = winston_1.default.createLogger({
 });
 const groqClient = new groq_sdk_1.default({ apiKey: config_1.CONFIG.GROQ_API_KEY });
 const toolConfigManager = new ToolConfigManager_1.ToolConfigManager();
+if (!process.env.DATABASE_URL) {
+    logger.error("FATAL: DATABASE_URL environment variable is not set. The application cannot start without it.");
+    throw new Error("DATABASE_URL environment variable is not set.");
+}
 const sql = (0, serverless_1.neon)(process.env.DATABASE_URL);
 const providerAwareFilter = new ProviderAwareToolFilter_1.ProviderAwareToolFilter(toolConfigManager, sql);
 const nangoService = new NangoService_1.NangoService();
