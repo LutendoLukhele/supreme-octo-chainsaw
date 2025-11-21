@@ -816,7 +816,7 @@
     },
     {
       "name": "fetch_entity",
-      "description": "Fetch Salesforce records (Account, Contact, Lead, Deal, etc.) with optional identifier or advanced filtering.",
+      "description": "Fetch Salesforce records (Account, Contact, Lead, Deal, Article, Case) with optional identifier or advanced filtering. Supports single record fetch by ID/field or bulk queries with complex filters, sorting, aggregation, and pagination.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
@@ -825,7 +825,11 @@
           "input": {
             "type": "object",
             "properties": {
-              "operation": { "type": "string", "enum": ["fetch"], "description": "Operation must be 'fetch'." },
+              "operation": {
+                "type": "string",
+                "enum": ["fetch"],
+                "description": "The operation to perform. Must be 'fetch'."
+              },
               "entityType": {
                 "type": "string",
                 "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
@@ -843,7 +847,7 @@
               },
               "filters": {
                 "type": "object",
-                "description": "Optional: Advanced criteria for filtering records when fetching multiple. Required if 'identifier' is 'all' or omitted.",
+                "description": "Optional: Advanced criteria for filtering records when fetching multiple. Required if 'identifier' is 'all' or omitted. Supports conditions, sorting, pagination, aggregation, and field selection.",
                 "optional": true,
                 "properties": {
                   "conditions": {
@@ -855,31 +859,110 @@
                           "type": "string",
                           "description": "The API name of the field to filter on. IMPORTANT: For fields on related objects, use dot notation, for example: 'Account.Name' or 'CreatedBy.Email'."
                         },
-                        "operator": { "type": "string", "enum": ["equals", "notEquals", "greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "contains", "notContains", "startsWith", "endsWith", "in", "notIn", "between", "isNull", "isNotNull"], "description": "Comparison operator." },
-                        "value": { "type": ["string", "number", "boolean", "array", "object", "null"], "description": "Single value for comparison (can be null)." },
-                        "values": { "type": "array", "items": { "type": ["string", "number", "boolean", "null"] }, "nullable": true, "description": "Multiple values for 'in', 'notIn', 'between' operators (usually strings, numbers, booleans, or null)." }
+                        "operator": {
+                          "type": "string",
+                          "enum": ["equals", "notEquals", "greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "contains", "notContains", "startsWith", "endsWith", "in", "notIn", "between", "isNull", "isNotNull"],
+                          "description": "Comparison operator."
+                        },
+                        "value": {
+                          "type": ["string", "number", "boolean", "array", "object", "null"],
+                          "description": "Single value for comparison (can be null)."
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": { "type": ["string", "number", "boolean", "null"] },
+                          "nullable": true,
+                          "description": "Multiple values for 'in', 'notIn', 'between' operators (usually strings, numbers, booleans, or null)."
+                        }
                       },
                       "required": ["field", "operator"]
                     },
-                    "description": "List of filter conditions."
+                    "description": "List of filter conditions to apply to the query."
                   },
-                  "logic": { "type": "string", "optional": true, "description": "Logical combination of conditions (e.g., '1 AND (2 OR 3)'). Defaults to AND if multiple conditions exist." },
-                  "orderBy": { "type": "array", "items": { "type": "object", "properties": { "field": { "type": "string" }, "direction": { "type": "string", "enum": ["ASC", "DESC"] } }, "required": ["field"] }, "optional": true, "description": "Sorting criteria." },
-                  "limit": { "type": "number", "optional": true, "description": "Maximum number of records. Defaults usually apply." },
-                  "offset": { "type": "number", "optional": true, "description": "Number of records to skip (pagination)." },
-                  "includeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to return. If omitted, default fields are returned." },
-                  "excludeFields": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Specific fields to exclude." },
-                  "timeFrame": { "type": "string", "optional": true, "description": "Predefined time frame (e.g., 'last7days')." },
-                  "groupBy": { "type": "array", "items": { "type": "string" }, "optional": true, "description": "Fields for grouping results." },
-                  "aggregate": { "type": "array", "items": { "type": "object", "properties": { "function": { "type": "string", "enum": ["SUM", "AVG", "COUNT", "MIN", "MAX"] }, "field": { "type": "string" }, "alias": { "type": "string" } }, "required": ["function", "field"] }, "optional": true, "description": "Aggregation functions." },
-                  "includeDeleted": { "type": "boolean", "optional": true, "description": "Include deleted records? Defaults to false." }
+                  "logic": {
+                    "type": "string",
+                    "optional": true,
+                    "description": "Logical combination of conditions (e.g., '1 AND (2 OR 3)'). Defaults to AND if multiple conditions exist."
+                  },
+                  "orderBy": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "field": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["ASC", "DESC"] }
+                      },
+                      "required": ["field"]
+                    },
+                    "optional": true,
+                    "description": "Sorting criteria for results."
+                  },
+                  "limit": {
+                    "type": "number",
+                    "optional": true,
+                    "description": "Maximum number of records to return. Defaults usually apply (typically 200-2000)."
+                  },
+                  "offset": {
+                    "type": "number",
+                    "optional": true,
+                    "description": "Number of records to skip (pagination offset)."
+                  },
+                  "includeFields": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "optional": true,
+                    "description": "Specific Salesforce API field names to return. If omitted, default fields are returned."
+                  },
+                  "excludeFields": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "optional": true,
+                    "description": "Specific Salesforce API field names to exclude from results."
+                  },
+                  "timeFrame": {
+                    "type": "string",
+                    "optional": true,
+                    "description": "Predefined time frame for date filtering (e.g., 'last7days', 'thisMonth', 'lastYear')."
+                  },
+                  "groupBy": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "optional": true,
+                    "description": "Fields for grouping results (used with aggregate functions)."
+                  },
+                  "aggregate": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "function": { "type": "string", "enum": ["SUM", "AVG", "COUNT", "MIN", "MAX"] },
+                        "field": { "type": "string" },
+                        "alias": { "type": "string" }
+                      },
+                      "required": ["function", "field"]
+                    },
+                    "optional": true,
+                    "description": "Aggregation functions for statistical queries (e.g., COUNT, SUM, AVG)."
+                  },
+                  "includeDeleted": {
+                    "type": "boolean",
+                    "optional": true,
+                    "description": "Include deleted/archived records in results? Defaults to false."
+                  }
                 }
               },
               "fields": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Optional: Specific fields to include in the results, alternative to 'filters.includeFields'.",
+                "description": "Optional: Specific Salesforce API field names to include in the results (alternative to 'filters.includeFields').",
                 "optional": true
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format: 'detailed' (normalized with metadata), 'simple' (minimal data), 'raw' (full Salesforce API response). Defaults to 'detailed'.",
+                "optional": true,
+                "default": "detailed"
               }
             },
             "required": ["operation", "entityType"]
@@ -890,7 +973,7 @@
     },
     {
       "name": "create_entity",
-      "description": "Use for business records. Create a new Salesforce record like an Account, Contact, Lead, Deal, or a support Case.",
+      "description": "Create a new Salesforce entity (Account, Contact, Lead, Deal, Article, or Case). Supports automatic field name mapping and batch operations with idempotency.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
@@ -899,18 +982,54 @@
           "input": {
             "type": "object",
             "properties": {
-              "operation": { "type": "string", "enum": ["create"], "description": "Operation must be 'create'." },
-              "entityType": { "type": "string", "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"], "description": "Type of Salesforce object to create." },
+              "operation": {
+                "type": "string",
+                "enum": ["create"],
+                "description": "The operation to perform. Must be 'create'."
+              },
+              "entityType": {
+                "type": "string",
+                "enum": ["Account", "Contact", "Lead", "Deal", "Article", "Case"],
+                "description": "The type of Salesforce entity to create."
+              },
+              "record": {
+                "type": "object",
+                "description": "Entity fields to set for creating a SINGLE record. Use either 'record' or 'fields' (they're aliases). Field names should match Salesforce API names (e.g., FirstName, LastName, Email, Company, Phone, Title, etc.).",
+                "optional": true,
+                "additionalProperties": true
+              },
               "fields": {
                 "type": "object",
-                "description": "Use for creating a SINGLE record. Key-value pairs of fields for the new record.",
-                "optional": true
+                "description": "Alias for 'record'. Use for creating a SINGLE record. Key-value pairs of Salesforce fields for the new record.",
+                "optional": true,
+                "additionalProperties": true
               },
               "records": {
                 "type": "array",
-                "items": { "type": "object" },
-                "description": "Use for creating MULTIPLE records in a batch. An array of record objects.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Record object with Salesforce field names and values."
+                },
+                "description": "Use for creating MULTIPLE records in a batch (max 100). An array of record objects, each with Salesforce field names.",
                 "optional": true
+              },
+              "parentId": {
+                "type": "string",
+                "description": "Optional parent record ID for creating child records or related entities (e.g., AccountId for creating a Contact under an Account).",
+                "optional": true
+              },
+              "idempotencyKey": {
+                "type": "string",
+                "description": "Optional unique key for this request to prevent duplicate creation. Use consistent format: e.g., 'contact-john-doe-2025-11-20' or 'lead-acme-corp-2025-11-20'.",
+                "optional": true
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format: 'detailed' (with warnings and metadata), 'simple' (just success/id), 'raw' (full API response). Defaults to 'detailed'.",
+                "optional": true,
+                "default": "detailed"
               }
             },
             "required": ["operation", "entityType"]
@@ -921,7 +1040,7 @@
     },
     {
       "name": "update_entity",
-      "description": "Update existing Salesforce record(s). Use 'identifier' to update a SINGLE record. Use 'records' for MULTIPLE records in a batch.",
+      "description": "Update existing Salesforce record(s) (Account, Contact, Lead, Deal, Article, Case). Supports single record updates by ID/field or batch updates with automatic field name mapping and idempotency.",
       "providerConfigKey": "salesforce-2",
       "category": "CRM",
       "parameters": {
@@ -933,7 +1052,7 @@
               "operation": {
                 "type": "string",
                 "enum": ["update", "batch_update"],
-                "description": "Use 'update' for a single record, 'batch_update' for multiple."
+                "description": "The operation to perform. Use 'update' for a single record, 'batch_update' for multiple records."
               },
               "entityType": {
                 "type": "string",
@@ -954,8 +1073,15 @@
               "fields": {
                 "type": "object",
                 "minProperties": 1,
-                "description": "Use for a SINGLE record update. Key-value pairs of fields and their new values.",
-                "optional": true
+                "description": "Use for a SINGLE record update. Key-value pairs of Salesforce API field names and their new values. Only provided fields will be updated.",
+                "optional": true,
+                "additionalProperties": true
+              },
+              "record": {
+                "type": "object",
+                "description": "Alias for 'fields'. Use for a SINGLE record update. Key-value pairs of Salesforce API field names and their new values.",
+                "optional": true,
+                "additionalProperties": true
               },
               "records": {
                 "type": "array",
@@ -974,16 +1100,209 @@
                     },
                     "fields": {
                       "type": "object",
-                      "description": "Key-value pairs of fields and their new values."
+                      "description": "Key-value pairs of Salesforce API field names and their new values.",
+                      "additionalProperties": true
+                    },
+                    "idempotencyKey": {
+                      "type": "string",
+                      "optional": true,
+                      "description": "Optional unique key for this specific update to prevent duplicate operations."
                     }
                   },
                   "required": ["identifier", "fields"]
                 },
-                "description": "Use for a BATCH update. An array of objects, each with an 'identifier', 'fields', and optional 'identifierType'.",
+                "description": "Use for a BATCH update (max 100 records). An array of objects, each with an 'identifier', 'fields', and optional 'identifierType' and 'idempotencyKey'.",
+                "optional": true
+              },
+              "idempotencyKey": {
+                "type": "string",
+                "description": "Optional unique key for this request to prevent duplicate updates. Use consistent format: e.g., 'update-contact-123-2025-11-20' or 'update-lead-acme-2025-11-20'.",
+                "optional": true
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format: 'detailed' (with warnings and metadata), 'simple' (just success status), 'raw' (full Salesforce API response). Defaults to 'detailed'.",
+                "optional": true,
+                "default": "detailed"
+              }
+            },
+            "required": ["operation", "entityType"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "create_outlook_entity",
+      "description": "Create Outlook entities: Message, Event, or Contact. Supports field validation, sanitization, and automatic parent ID handling for nested entities.",
+      "providerConfigKey": "outlook",
+      "category": "Email & Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["create"],
+                "description": "Operation must be 'create'."
+              },
+              "entityType": {
+                "type": "string",
+                "enum": ["Message", "Event", "Contact"],
+                "description": "The type of Outlook entity to create."
+              },
+              "record": {
+                "type": "object",
+                "description": "Entity fields. Aliases: 'record' or 'fields'. Field names match Microsoft Graph API names (e.g., subject, body, toRecipients, start, end, displayName, emailAddresses, etc.).",
+                "optional": true,
+                "additionalProperties": true
+              },
+              "fields": {
+                "type": "object",
+                "description": "Alias for 'record'. Key-value pairs of entity properties.",
+                "optional": true,
+                "additionalProperties": true
+              },
+              "parentId": {
+                "type": "string",
+                "description": "Optional parent record ID (e.g., folder ID for Message, calendar ID for Event, contact folder ID for Contact).",
                 "optional": true
               }
             },
             "required": ["operation", "entityType"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "update_outlook_entity",
+      "description": "Update Outlook entities: Message, Event, or Contact. Supports field validation and sanitization with patch operations.",
+      "providerConfigKey": "outlook",
+      "category": "Email & Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["update"],
+                "description": "Operation must be 'update'."
+              },
+              "entityType": {
+                "type": "string",
+                "enum": ["Message", "Event", "Contact"],
+                "description": "The type of Outlook entity to update."
+              },
+              "id": {
+                "type": "string",
+                "description": "The ID of the entity to update."
+              },
+              "patch": {
+                "type": "object",
+                "description": "Fields to update. Only provided fields will be changed.",
+                "optional": true,
+                "additionalProperties": true
+              },
+              "fields": {
+                "type": "object",
+                "description": "Alias for 'patch'. Key-value pairs of fields to update.",
+                "optional": true,
+                "additionalProperties": true
+              }
+            },
+            "required": ["operation", "entityType", "id"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "fetch_outlook_entity",
+      "description": "Fetch Outlook entities: Message, Event, Contact, MailFolder, Calendar, or Attachment. Supports ODATA filtering, pagination, and field selection.",
+      "providerConfigKey": "outlook",
+      "category": "Email & Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["fetch"],
+                "description": "Operation must be 'fetch'."
+              },
+              "entityType": {
+                "type": "string",
+                "enum": ["Message", "Event", "Contact", "MailFolder", "Calendar", "Attachment"],
+                "description": "The type of Outlook entity to fetch."
+              },
+              "parentId": {
+                "type": "string",
+                "description": "Optional parent ID (e.g., folder ID for Message, calendar ID for Event, message ID for Attachment). Required for Attachment.",
+                "optional": true
+              },
+              "filters": {
+                "type": "object",
+                "description": "Optional ODATA filters for querying multiple entities.",
+                "optional": true,
+                "properties": {
+                  "from": { "type": "string", "optional": true, "description": "Filter by sender (for Message)." },
+                  "subject": { "type": "string", "optional": true, "description": "Filter by subject text (startswith)." },
+                  "isRead": { "type": "boolean", "optional": true, "description": "Filter by read status (Message)." },
+                  "hasAttachments": { "type": "boolean", "optional": true, "description": "Filter by attachment presence (Message)." },
+                  "displayName": { "type": "string", "optional": true, "description": "Filter by name (for Contact, MailFolder)." },
+                  "limit": { "type": "integer", "optional": true, "description": "Maximum records to return (max 1000)." },
+                  "offset": { "type": "integer", "optional": true, "description": "Number of records to skip (pagination)." }
+                }
+              },
+              "format": {
+                "type": "string",
+                "enum": ["detailed", "simple", "raw"],
+                "description": "Response format: 'detailed' (normalized), 'simple' (minimal), or 'raw' (API response). Defaults to 'detailed'.",
+                "optional": true,
+                "default": "detailed"
+              }
+            },
+            "required": ["operation", "entityType"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "fetch_outlook_event_body",
+      "description": "Fetch the body content of an Outlook event. Returns event subject, body content, and content type (text or HTML).",
+      "providerConfigKey": "outlook",
+      "category": "Email & Calendar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["fetch"],
+                "description": "Operation must be 'fetch'."
+              },
+              "eventId": {
+                "type": "string",
+                "description": "The ID of the Outlook event to fetch body from."
+              },
+              "calendarId": {
+                "type": "string",
+                "description": "Optional calendar ID. If omitted, uses default calendar.",
+                "optional": true
+              }
+            },
+            "required": ["operation", "eventId"]
           }
         },
         "required": ["input"]
@@ -1015,6 +1334,12 @@
       "provider_config_key": "salesforce-2",
       "connection_id": "2afdea8f-9c5a-4555-9e88-6c440e59c037",
       "objects": ["Account", "Contact", "Lead", "Deal", "Article", "Case"]
+    },
+    "outlook": {
+      "endpoint": "outlook",
+      "provider_config_key": "outlook",
+      "connection_id": "outlook-connection-id",
+      "objects": ["Message", "Event", "Contact", "MailFolder", "Calendar", "Attachment"]
     }
   }
 }

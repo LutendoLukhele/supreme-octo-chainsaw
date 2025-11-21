@@ -157,7 +157,7 @@ export class ConversationService extends EventEmitter {
         
         const conversationalStreamPromise = this.runConversationalStream(
             userMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId,
-            toolsForStream, history, aggregatedToolCallsOutput
+            toolsForStream, history, aggregatedToolCallsOutput, _userId
         ).then(result => {
             conversationalResponseText = result.text;
         });
@@ -187,7 +187,8 @@ export class ConversationService extends EventEmitter {
         messageProcessingId: string,
         toolsForThisStream: any[],
         historyForThisStream: Message[],
-        aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls']
+        aggregatedToolCallsOutput: ProcessedMessageResult['aggregatedToolCalls'],
+        _userId?: string
     ): Promise<ConversationalStreamResult> {
         const streamId = `conversational_${messageProcessingId}`;
         logger.info('Starting main conversational stream', { sessionId, streamId });
@@ -219,16 +220,38 @@ export class ConversationService extends EventEmitter {
             });
             parser.startParsing();
 
+            // Get provider context if available
+            let providerContext = '';
+            if (this.providerAwareFilter && _userId) {
+                providerContext = await this.providerAwareFilter.getProviderContextForPrompt(_userId);
+            }
+
             const systemPromptContent = MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE
                 .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '');
+                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '')
+                .replace('{{PROVIDER_CONTEXT}}', providerContext);
 
             const messagesForApi: Message[] = [
                 { role: 'system', content: systemPromptContent }
             ];
-            messagesForApi.push(
-              ...this.prepareHistoryForLLM(historyForThisStream)
-            );
+            const preparedHistory = this.prepareHistoryForLLM(historyForThisStream);
+            messagesForApi.push(...preparedHistory);
+
+            // Debug: Log the messages being sent to LLM, especially in summary mode
+            const isSummaryMode = !currentUserMessage;
+            if (isSummaryMode) {
+                logger.info('Summary mode: Messages being sent to LLM', {
+                    sessionId,
+                    totalMessages: messagesForApi.length,
+                    messageRoles: messagesForApi.map(m => m.role),
+                    toolResultCount: messagesForApi.filter(m => m.role === 'tool').length,
+                    toolResults: messagesForApi.filter(m => m.role === 'tool').map(m => ({
+                        name: m.name,
+                        hasContent: !!m.content,
+                        contentLength: m.content?.length || 0
+                    }))
+                });
+            }
 
             // Always provide the tools. The prompt guides the LLM on when to use them.
             const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
@@ -305,8 +328,13 @@ export class ConversationService extends EventEmitter {
                 });
             }
             // After the stream is complete, add the assistant's text response to history.
-            // Tool calls will be handled by the dedicated tool stream.
-            const assistantResponse: Message = { role: 'assistant', content: accumulatedText || null };
+            // Include tool_calls if any were made - this is critical for the LLM to understand
+            // the context when we later add tool results and generate a summary.
+            const assistantResponse: Message = {
+                role: 'assistant',
+                content: accumulatedText || null,
+                tool_calls: accumulatedToolCalls || null
+            };
             historyForThisStream.push(assistantResponse);
             this.conversationHistory.set(sessionId, this.trimHistory(historyForThisStream));
 
@@ -362,7 +390,16 @@ export class ConversationService extends EventEmitter {
         }
     }
     private prepareHistoryForLLM(history: Message[]): Message[] {
-        return history.filter(msg => msg.role !== 'system' && (msg.content || (msg.tool_calls && msg.tool_calls.length > 0)));
+        return history.filter(msg => {
+            // Exclude system messages (they're added separately)
+            if (msg.role === 'system') return false;
+
+            // Include tool result messages (role: 'tool') if they have content
+            if (msg.role === 'tool' && msg.content) return true;
+
+            // Include other messages (user/assistant) if they have content or tool calls
+            return msg.content || (msg.tool_calls && msg.tool_calls.length > 0);
+        });
     }
 
     private getHistory(sessionId: string): Message[] {
@@ -390,15 +427,13 @@ export class ConversationService extends EventEmitter {
 
     public addToolResultMessageToHistory(sessionId: string, toolCallId: string, toolName: string, resultData: any): void {
         const history = this.getHistory(sessionId);
-        const toolMessage = {
-            role: 'tool' as any, // Cast because 'tool' is not in the standard Message role yet
+        const toolMessage: Message = {
+            role: 'tool',
             tool_call_id: toolCallId,
             name: toolName,
             content: JSON.stringify(resultData, null, 2),
         };
-        // The official pattern is to add a `tool` message, not append to assistant.
-        // However, Groq might expect it on the assistant message. Let's try the official pattern first.
-        history.push(toolMessage as Message);
+        history.push(toolMessage);
         this.conversationHistory.set(sessionId, this.trimHistory(history));
         logger.info('Added tool result message to history', { sessionId, toolName, toolCallId });
     }

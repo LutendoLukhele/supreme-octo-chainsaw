@@ -35,6 +35,14 @@ class ToolOrchestrator extends BaseService_1.BaseService {
                 this.logger.info('Applying fetch_entity normalization logic.');
                 toolCallToExecute.arguments = this._normalizeFetchEntityArgs(originalArgs);
             }
+            else if (toolName === 'create_entity') {
+                this.logger.info('Applying create_entity normalization logic.');
+                toolCallToExecute.arguments = this._normalizeCreateEntityArgs(originalArgs);
+            }
+            else if (toolName === 'update_entity') {
+                this.logger.info('Applying update_entity normalization logic.');
+                toolCallToExecute.arguments = this._normalizeUpdateEntityArgs(originalArgs);
+            }
             const nangoResult = await this.executeNangoActionDispatcher(toolCallToExecute);
             let finalData;
             if (nangoResult && typeof nangoResult.truncated_response === 'string') {
@@ -91,6 +99,59 @@ class ToolOrchestrator extends BaseService_1.BaseService {
             limit: wrapIfPresent(args.limit)
         };
     }
+    _normalizeCreateEntityArgs(args) {
+        const normalizedArgs = {
+            operation: args.operation || 'create',
+            entityType: args.entityType,
+        };
+        if (args.record !== undefined) {
+            normalizedArgs.record = args.record;
+        }
+        if (args.fields !== undefined) {
+            normalizedArgs.fields = args.fields;
+        }
+        if (args.records !== undefined) {
+            normalizedArgs.records = args.records;
+        }
+        if (args.parentId !== undefined) {
+            normalizedArgs.parentId = args.parentId;
+        }
+        if (args.idempotencyKey !== undefined) {
+            normalizedArgs.idempotencyKey = args.idempotencyKey;
+        }
+        if (args.format !== undefined) {
+            normalizedArgs.format = args.format;
+        }
+        return normalizedArgs;
+    }
+    _normalizeUpdateEntityArgs(args) {
+        const normalizedArgs = {
+            operation: args.operation || 'update',
+            entityType: args.entityType,
+        };
+        if (args.identifier !== undefined) {
+            normalizedArgs.identifier = args.identifier;
+        }
+        if (args.identifierType !== undefined) {
+            normalizedArgs.identifierType = args.identifierType;
+        }
+        if (args.record !== undefined) {
+            normalizedArgs.record = args.record;
+        }
+        if (args.fields !== undefined) {
+            normalizedArgs.fields = args.fields;
+        }
+        if (args.records !== undefined) {
+            normalizedArgs.records = args.records;
+        }
+        if (args.idempotencyKey !== undefined) {
+            normalizedArgs.idempotencyKey = args.idempotencyKey;
+        }
+        if (args.format !== undefined) {
+            normalizedArgs.format = args.format;
+        }
+        return normalizedArgs;
+    }
     async resolveConnectionId(userId, providerConfigKey) {
         this.logger.info(`Querying database for connectionId`, { userId, providerConfigKey });
         const rows = await sql `
@@ -123,6 +184,22 @@ class ToolOrchestrator extends BaseService_1.BaseService {
             case 'update_entity':
             case 'fetch_entity':
                 return this.nangoService.triggerSalesforceAction(providerConfigKey, connectionId, args);
+            case 'fetch_calendar_events':
+                return this.nangoService.fetchCalendarEvents(providerConfigKey, connectionId, args);
+            case 'create_calendar_event':
+                return this.nangoService.createCalendarEvent(providerConfigKey, connectionId, args);
+            case 'update_calendar_event':
+                return this.nangoService.updateCalendarEvent(providerConfigKey, connectionId, args);
+            case 'create_outlook_entity':
+            case 'update_outlook_entity':
+            case 'fetch_outlook_entity':
+                return this.nangoService.triggerOutlookAction(providerConfigKey, connectionId, args);
+            case 'fetch_outlook_event_body':
+                return this.nangoService.fetchOutlookEventBody(providerConfigKey, connectionId, args);
+            case 'fetch_notion_page':
+            case 'create_notion_page':
+            case 'update_notion_page':
+                return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
             case 'create_zoom_meeting':
                 return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
             default:

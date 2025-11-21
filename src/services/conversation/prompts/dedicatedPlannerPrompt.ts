@@ -9,6 +9,8 @@ Pre-identified Tool Calls (if any, verify and integrate these):
 Available Tools (use the exact 'name' property from this list for the 'tool' field in your plan):
 {{TOOL_DEFINITIONS_JSON}}
 
+{{PROVIDER_CONTEXT}}
+
 ---
 **CRITICAL RULES: TOOL SELECTION**
 

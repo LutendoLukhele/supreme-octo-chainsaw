@@ -48,10 +48,12 @@ export interface ConversationResponse {
 
 // Message interface
 export interface Message {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string| null;
-  tool_calls?: ChatCompletionMessageToolCall[] | null; // <-- ADD THIS LINE
-
+  tool_calls?: ChatCompletionMessageToolCall[] | null;
+  // Properties for tool result messages
+  tool_call_id?: string;
+  name?: string;
 }
 
 export enum MessageType {

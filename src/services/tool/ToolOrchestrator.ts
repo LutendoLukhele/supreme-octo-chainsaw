@@ -41,9 +41,16 @@ export class ToolOrchestrator extends BaseService {
             const toolCallToExecute = { ...toolCall };
             const originalArgs = toolCall.arguments?.input || toolCall.arguments || {};
 
+            // Normalize Salesforce entity tool arguments
             if (toolName === 'fetch_entity') {
                 this.logger.info('Applying fetch_entity normalization logic.');
                 toolCallToExecute.arguments = this._normalizeFetchEntityArgs(originalArgs);
+            } else if (toolName === 'create_entity') {
+                this.logger.info('Applying create_entity normalization logic.');
+                toolCallToExecute.arguments = this._normalizeCreateEntityArgs(originalArgs);
+            } else if (toolName === 'update_entity') {
+                this.logger.info('Applying update_entity normalization logic.');
+                toolCallToExecute.arguments = this._normalizeUpdateEntityArgs(originalArgs);
             }
 
             const nangoResult = await this.executeNangoActionDispatcher(toolCallToExecute);
@@ -118,6 +125,77 @@ export class ToolOrchestrator extends BaseService {
     };
 }
 
+    private _normalizeCreateEntityArgs(args: Record<string, any>): Record<string, any> {
+        const normalizedArgs: Record<string, any> = {
+            operation: args.operation || 'create',
+            entityType: args.entityType,
+        };
+
+        // Pass through all possible data fields (record, fields, and records)
+        // 'record' and 'fields' are aliases for single record creation
+        // 'records' is for batch creation
+        if (args.record !== undefined) {
+            normalizedArgs.record = args.record;
+        }
+        if (args.fields !== undefined) {
+            normalizedArgs.fields = args.fields;
+        }
+        if (args.records !== undefined) {
+            normalizedArgs.records = args.records;
+        }
+
+        // Pass through optional fields from tool config
+        if (args.parentId !== undefined) {
+            normalizedArgs.parentId = args.parentId;
+        }
+        if (args.idempotencyKey !== undefined) {
+            normalizedArgs.idempotencyKey = args.idempotencyKey;
+        }
+        if (args.format !== undefined) {
+            normalizedArgs.format = args.format;
+        }
+
+        return normalizedArgs;
+    }
+
+    private _normalizeUpdateEntityArgs(args: Record<string, any>): Record<string, any> {
+        const normalizedArgs: Record<string, any> = {
+            operation: args.operation || 'update',
+            entityType: args.entityType,
+        };
+
+        // Pass through identifier fields
+        if (args.identifier !== undefined) {
+            normalizedArgs.identifier = args.identifier;
+        }
+        if (args.identifierType !== undefined) {
+            normalizedArgs.identifierType = args.identifierType;
+        }
+
+        // Pass through all possible data fields (record, fields, and records)
+        // 'record' and 'fields' are aliases for single record update
+        // 'records' is for batch updates
+        if (args.record !== undefined) {
+            normalizedArgs.record = args.record;
+        }
+        if (args.fields !== undefined) {
+            normalizedArgs.fields = args.fields;
+        }
+        if (args.records !== undefined) {
+            normalizedArgs.records = args.records;
+        }
+
+        // Pass through optional fields from tool config
+        if (args.idempotencyKey !== undefined) {
+            normalizedArgs.idempotencyKey = args.idempotencyKey;
+        }
+        if (args.format !== undefined) {
+            normalizedArgs.format = args.format;
+        }
+
+        return normalizedArgs;
+    }
+
 
     private async resolveConnectionId(userId: string, providerConfigKey: string): Promise<string | null> {
         this.logger.info(`Querying database for connectionId`, { userId, providerConfigKey });
@@ -150,16 +228,44 @@ export class ToolOrchestrator extends BaseService {
         this.logger.info(`Dispatching tool`, { toolName, userId, providerConfigKey, connectionId });
 
         switch (toolName) {
+            // Email tools
             case 'send_email':
                 return this.nangoService.sendEmail(providerConfigKey, connectionId, args as any);
             case 'fetch_emails':
                 return this.nangoService.fetchEmails(providerConfigKey, connectionId, args);
+
+            // Salesforce CRM tools
             case 'create_entity':
             case 'update_entity':
             case 'fetch_entity':
                 return this.nangoService.triggerSalesforceAction(providerConfigKey, connectionId, args as any);
+
+            // Google Calendar tools
+            case 'fetch_calendar_events':
+                return this.nangoService.fetchCalendarEvents(providerConfigKey, connectionId, args);
+            case 'create_calendar_event':
+                return this.nangoService.createCalendarEvent(providerConfigKey, connectionId, args);
+            case 'update_calendar_event':
+                return this.nangoService.updateCalendarEvent(providerConfigKey, connectionId, args);
+
+            // Outlook tools (Email, Calendar, Contacts)
+            case 'create_outlook_entity':
+            case 'update_outlook_entity':
+            case 'fetch_outlook_entity':
+                return this.nangoService.triggerOutlookAction(providerConfigKey, connectionId, args as any);
+            case 'fetch_outlook_event_body':
+                return this.nangoService.fetchOutlookEventBody(providerConfigKey, connectionId, args);
+
+            // Notion tools
+            case 'fetch_notion_page':
+            case 'create_notion_page':
+            case 'update_notion_page':
+                return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
+
+            // Other integrations
             case 'create_zoom_meeting':
                 return this.nangoService.triggerGenericNangoAction(providerConfigKey, connectionId, toolName, args);
+
             default:
                 throw new Error(`No Nango handler for tool: ${toolName}`);
         }

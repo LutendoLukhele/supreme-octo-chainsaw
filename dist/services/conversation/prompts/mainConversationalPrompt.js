@@ -34,11 +34,18 @@ USER CONTEXT:
 - Initial request: {{USER_INITIAL_QUERY}}
 - Current message: {{USER_CURRENT_MESSAGE}}
 
+{{PROVIDER_CONTEXT}}
+
 **IMPORTANT**: If the current message is empty or blank, this means tools were just executed to fulfill the initial request. In this case:
-1. Review the tool results in the conversation history
-2. Provide a warm, conversational summary of what was accomplished
-3. Highlight key findings or next steps if relevant
+1. Review the tool_calls from the previous assistant message to understand what actions were taken
+2. Review the corresponding tool results in the conversation history
+3. Provide a warm, conversational summary that:
+   - Explicitly states what was accomplished (e.g., "I've created the contact Sarah Chen")
+   - Includes key details from the results (e.g., IDs, statuses, created records)
+   - Mentions any warnings or important notes from the tool execution
+   - Suggests relevant next steps if appropriate
 4. DO NOT call any tools - just summarize the results
+5. Be specific and reference actual data from the tool results, not generic statements
 
 Now, please respond.
 `;

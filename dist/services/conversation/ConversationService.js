@@ -115,7 +115,7 @@ class ConversationService extends events_1.EventEmitter {
         }
         const aggregatedToolCallsOutput = [];
         let conversationalResponseText = "";
-        const conversationalStreamPromise = this.runConversationalStream(userMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId, toolsForStream, history, aggregatedToolCallsOutput).then(result => {
+        const conversationalStreamPromise = this.runConversationalStream(userMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId, toolsForStream, history, aggregatedToolCallsOutput, _userId).then(result => {
             conversationalResponseText = result.text;
         });
         await Promise.allSettled([conversationalStreamPromise]);
@@ -131,7 +131,7 @@ class ConversationService extends events_1.EventEmitter {
             conversationalResponse: conversationalResponseText
         };
     }
-    async runConversationalStream(currentUserMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId, toolsForThisStream, historyForThisStream, aggregatedToolCallsOutput) {
+    async runConversationalStream(currentUserMessage, initialUserQuery, sessionId, currentMessageId, messageProcessingId, toolsForThisStream, historyForThisStream, aggregatedToolCallsOutput, _userId) {
         const streamId = `conversational_${messageProcessingId}`;
         logger.info('Starting main conversational stream', { sessionId, streamId });
         const parserInstanceId = `conv_parser_${sessionId}_${currentMessageId}`;
@@ -161,13 +161,33 @@ class ConversationService extends events_1.EventEmitter {
                 }
             });
             parser.startParsing();
+            let providerContext = '';
+            if (this.providerAwareFilter && _userId) {
+                providerContext = await this.providerAwareFilter.getProviderContextForPrompt(_userId);
+            }
             const systemPromptContent = mainConversationalPrompt_1.MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE
                 .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '');
+                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '')
+                .replace('{{PROVIDER_CONTEXT}}', providerContext);
             const messagesForApi = [
                 { role: 'system', content: systemPromptContent }
             ];
-            messagesForApi.push(...this.prepareHistoryForLLM(historyForThisStream));
+            const preparedHistory = this.prepareHistoryForLLM(historyForThisStream);
+            messagesForApi.push(...preparedHistory);
+            const isSummaryMode = !currentUserMessage;
+            if (isSummaryMode) {
+                logger.info('Summary mode: Messages being sent to LLM', {
+                    sessionId,
+                    totalMessages: messagesForApi.length,
+                    messageRoles: messagesForApi.map(m => m.role),
+                    toolResultCount: messagesForApi.filter(m => m.role === 'tool').length,
+                    toolResults: messagesForApi.filter(m => m.role === 'tool').map(m => ({
+                        name: m.name,
+                        hasContent: !!m.content,
+                        contentLength: m.content?.length || 0
+                    }))
+                });
+            }
             const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
             logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
             const responseStream = await this.client.chat.completions.create({
@@ -232,7 +252,11 @@ class ConversationService extends events_1.EventEmitter {
                     }
                 });
             }
-            const assistantResponse = { role: 'assistant', content: accumulatedText || null };
+            const assistantResponse = {
+                role: 'assistant',
+                content: accumulatedText || null,
+                tool_calls: accumulatedToolCalls || null
+            };
             historyForThisStream.push(assistantResponse);
             this.conversationHistory.set(sessionId, this.trimHistory(historyForThisStream));
         }
@@ -284,7 +308,13 @@ class ConversationService extends events_1.EventEmitter {
         }
     }
     prepareHistoryForLLM(history) {
-        return history.filter(msg => msg.role !== 'system' && (msg.content || (msg.tool_calls && msg.tool_calls.length > 0)));
+        return history.filter(msg => {
+            if (msg.role === 'system')
+                return false;
+            if (msg.role === 'tool' && msg.content)
+                return true;
+            return msg.content || (msg.tool_calls && msg.tool_calls.length > 0);
+        });
     }
     getHistory(sessionId) {
         return this.conversationHistory.get(sessionId) || [];

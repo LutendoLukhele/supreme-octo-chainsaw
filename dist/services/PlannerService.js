@@ -334,10 +334,15 @@ Be specific about what's being done. Example: "Okay, sending an email to John Do
                 identifiedToolsPromptSection += `- Tool: ${tc.name}, Arguments: ${JSON.stringify(tc.arguments)}\n`;
             });
         }
+        let providerContext = '';
+        if (this.providerAwareFilter && userId) {
+            providerContext = await this.providerAwareFilter.getProviderContextForPrompt(userId);
+        }
         const systemPromptContent = dedicatedPlannerPrompt_1.DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE
             .replace('{{USER_CURRENT_MESSAGE}}', userInput)
             .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
-            .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+            .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection)
+            .replace('{{PROVIDER_CONTEXT}}', providerContext);
         logger.info('PlannerService: Constructed system prompt for planner', {
             sessionId,
             availableToolNames: availableTools.map(t => t.name),

@@ -39,10 +39,21 @@ class NangoService {
             switch (providerConfigKey) {
                 case 'gmail':
                 case 'google':
+                case 'google-mail':
                     pingEndpoint = '/gmail/v1/users/me/profile';
                     break;
+                case 'google-calendar':
+                    pingEndpoint = '/calendar/v3/users/me/calendarList';
+                    break;
                 case 'salesforce':
+                case 'salesforce-2':
                     pingEndpoint = '/services/data/v60.0/sobjects';
+                    break;
+                case 'outlook':
+                    pingEndpoint = '/me';
+                    break;
+                case 'notion':
+                    pingEndpoint = '/v1/users/me';
                     break;
                 default:
                     pingEndpoint = '/';
@@ -246,6 +257,89 @@ class NangoService {
         }
         catch (error) {
             this.logger.error('Failed to create calendar event', { error: error.message || error });
+            throw error;
+        }
+    }
+    async updateCalendarEvent(providerConfigKey, connectionId, args) {
+        const actionName = 'update-event';
+        this.logger.info('Updating calendar event via Nango', { actionName });
+        try {
+            await this.warmConnection(providerConfigKey, connectionId);
+            const response = await this.nango.triggerAction(providerConfigKey, connectionId, actionName, args);
+            return response;
+        }
+        catch (error) {
+            this.logger.error('Failed to update calendar event', { error: error.message || error });
+            throw error;
+        }
+    }
+    async triggerOutlookAction(providerConfigKey, connectionId, actionPayload) {
+        const { operation, entityType } = actionPayload;
+        let actionName;
+        if (operation === 'create') {
+            actionName = `outlook-create-${entityType.toLowerCase()}`;
+        }
+        else if (operation === 'update') {
+            actionName = `outlook-update-${entityType.toLowerCase()}`;
+        }
+        else if (operation === 'fetch') {
+            actionName = `outlook-fetch-${entityType.toLowerCase()}`;
+        }
+        else {
+            throw new Error(`Unsupported Outlook operation: ${operation} for ${entityType}`);
+        }
+        this.logger.info('Triggering Outlook action via Nango', { actionName, input: actionPayload });
+        try {
+            await this.warmConnection(providerConfigKey, connectionId);
+            const response = await axios_1.default.post('https://api.nango.dev/action/trigger', {
+                action_name: actionName,
+                input: actionPayload
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${config_1.CONFIG.NANGO_SECRET_KEY}`,
+                    'Provider-Config-Key': providerConfigKey,
+                    'Connection-Id': connectionId,
+                    'Content-Type': 'application/json'
+                }
+            });
+            this.logger.info('Outlook action executed successfully', { actionName });
+            return response.data;
+        }
+        catch (error) {
+            this.logger.error('Outlook action failed', {
+                error: error.response?.data || error.message,
+                actionName
+            });
+            const enhancedError = new Error(error.response?.data?.message || `Request failed for '${actionName}' with status code ${error.response?.status}`);
+            enhancedError.nangoErrorDetails = {
+                actionName,
+                statusCode: error.response?.status,
+                nangoPayload: error.response?.data || null,
+                timestamp: new Date().toISOString()
+            };
+            throw enhancedError;
+        }
+    }
+    async fetchOutlookEventBody(providerConfigKey, connectionId, args) {
+        const actionName = 'outlook-fetch-event-body';
+        this.logger.info('Fetching Outlook event body via Nango', { actionName });
+        try {
+            await this.warmConnection(providerConfigKey, connectionId);
+            const response = await axios_1.default.post('https://api.nango.dev/action/trigger', {
+                action_name: actionName,
+                input: args
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${config_1.CONFIG.NANGO_SECRET_KEY}`,
+                    'Provider-Config-Key': providerConfigKey,
+                    'Connection-Id': connectionId,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        }
+        catch (error) {
+            this.logger.error('Failed to fetch Outlook event body', { error: error.message || error });
             throw error;
         }
     }

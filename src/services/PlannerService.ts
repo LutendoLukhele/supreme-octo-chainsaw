@@ -451,10 +451,17 @@ public async generatePlan(
     });
   }
 
+  // Get provider context if available
+  let providerContext = '';
+  if (this.providerAwareFilter && userId) {
+    providerContext = await this.providerAwareFilter.getProviderContextForPrompt(userId);
+  }
+
   const systemPromptContent = DEDICATED_PLANNER_SYSTEM_PROMPT_TEMPLATE
     .replace('{{USER_CURRENT_MESSAGE}}', userInput)
     .replace('{{TOOL_DEFINITIONS_JSON}}', toolDefinitionsJson)
-    .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection);
+    .replace('{{PRE_IDENTIFIED_TOOLS_SECTION}}', identifiedToolsPromptSection)
+    .replace('{{PROVIDER_CONTEXT}}', providerContext);
 
   logger.info('PlannerService: Constructed system prompt for planner', {
     sessionId,

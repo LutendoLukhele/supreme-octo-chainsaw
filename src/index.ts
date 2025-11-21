@@ -21,6 +21,8 @@ const redis = new Redis(CONFIG.REDIS_URL!);
 import { ConversationService } from './services/conversation/ConversationService';
 import { ToolOrchestrator } from './services/tool/ToolOrchestrator';
 import { ProviderAwareToolFilter } from './services/tool/ProviderAwareToolFilter';
+import { UserToolCacheService } from './services/tool/UserToolCacheService';
+import { SessionRegistry } from './services/SessionRegistry';
 import { StreamManager } from './services/stream/StreamManager';
 import { NangoService } from './services/NangoService';
 import { FollowUpService } from './services/FollowUpService';
@@ -73,7 +75,13 @@ if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL environment variable is not set.");
 }
 const sql = neon(process.env.DATABASE_URL);
-const providerAwareFilter = new ProviderAwareToolFilter(toolConfigManager, sql);
+
+// Initialize caching and session tracking services
+const userToolCacheService = new UserToolCacheService(redis);
+const sessionRegistry = new SessionRegistry(redis);
+
+// Initialize provider-aware filter with cache support
+const providerAwareFilter = new ProviderAwareToolFilter(toolConfigManager, sql, userToolCacheService);
 
 const nangoService = new NangoService();
 const streamManager = new StreamManager({ logger });
@@ -163,22 +171,39 @@ plannerService.on('send_chunk', (sessionId: string, chunk: StreamChunk) => {
     streamManager.sendChunk(sessionId, chunk);
 });
 
+// Helper function to notify user of tool changes across all their active sessions
+async function notifyUserOfToolChanges(userId: string): Promise<void> {
+    try {
+        const activeSessions = await sessionRegistry.getActiveSessionsForUser(userId);
+        const availableTools = await providerAwareFilter.getAvailableToolsForUser(userId);
+
+        logger.info('Notifying user of tool changes', {
+            userId,
+            sessionCount: activeSessions.length,
+            toolCount: availableTools.length,
+        });
+
+        for (const sessionId of activeSessions) {
+            streamManager.sendChunk(sessionId, {
+                type: 'tools_updated',
+                content: { tools: availableTools }
+            } as unknown as StreamChunk);
+        }
+    } catch (error) {
+        logger.error('Error notifying user of tool changes', {
+            userId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+        });
+    }
+}
+
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const sessionId = req.url?.slice(1) || uuidv4();
     streamManager.addConnection(sessionId, ws);
     logger.info('Client connected', { sessionId });
 
-    // Send session configuration to the client
-    const sessionConfig = {
-        sessionId: sessionId,
-        tools: toolConfigManager.getToolDefinitionsForPlanner(),
-    };
-    streamManager.sendChunk(sessionId, {
-        type: 'session_init',
-        content: sessionConfig
-    } as unknown as StreamChunk);
-
     // Send connection confirmation to the client
+    // Note: Tools will be sent after authentication when we know the userId
     streamManager.sendChunk(sessionId, { type: 'connection_ack', content: { sessionId } } as unknown as StreamChunk);
 
     ws.on('message', async (message: string) => {
@@ -192,8 +217,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const decodedToken = await firebaseAdminAuth.verifyIdToken(data.idToken);
         userId = decodedToken.uid;
         await sessionState.setItem(sessionId, { userId });
+
+        // Register session for this user
+        await sessionRegistry.registerUserSession(userId, sessionId);
+
         streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } } as unknown as StreamChunk);
         logger.info('Client authenticated', { userId, sessionId });
+
+        // Send provider-aware tools to the client
+        try {
+            const availableTools = await providerAwareFilter.getAvailableToolsForUser(userId);
+            streamManager.sendChunk(sessionId, {
+                type: 'session_init',
+                content: {
+                    sessionId: sessionId,
+                    tools: availableTools,
+                }
+            } as unknown as StreamChunk);
+            logger.info('Sent provider-aware tools to client', { userId, toolCount: availableTools.length });
+        } catch (toolError: any) {
+            logger.error('Error sending provider-aware tools', { userId, error: toolError.message });
+        }
 
         // Warm connections
         try {
@@ -209,8 +253,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // Handle unauthenticated session for development/testing
         userId = `unauthenticated-user-${uuidv4()}`;
         await sessionState.setItem(sessionId, { userId });
+
+        // Register session for unauthenticated user
+        await sessionRegistry.registerUserSession(userId, sessionId);
+
         streamManager.sendChunk(sessionId, { type: 'auth_success', content: { userId } } as unknown as StreamChunk);
         logger.info('Unauthenticated session created', { userId, sessionId });
+
+        // Send empty tools for unauthenticated users
+        streamManager.sendChunk(sessionId, {
+            type: 'session_init',
+            content: {
+                sessionId: sessionId,
+                tools: [],
+            }
+        } as unknown as StreamChunk);
     }
     return;
 }
@@ -274,6 +331,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // For now, we let the main loop handle it to keep logic centralized.
         }
 
+        // --- UPDATE PARAMETER (FROM CLIENT) ---
+        if (data.type === 'update_parameter' && data.content) {
+            // This calls the method in ActionLauncherService which will validate the parameter,
+            // update the action's state, and emit an 'action_ready_for_confirmation' or
+            // 'parameter_collection_required' event back to the client.
+            actionLauncherService.updateParameterValue(sessionId, data.content);
+            // No need to send anything back here; the service emits the necessary events.
+            return;
+        }
+
         // --- UPDATE ACTIVE CONNECTION ---
         if (data.type === 'update_active_connection' && data.content) {
             const { connectionId } = data.content;
@@ -282,12 +349,41 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             await redis.set(`active-connection:${userId}`, connectionId);
             logger.info(`Successfully set active Nango connection for user`, { userId });
 
+            // Invalidate user's tool cache since connections changed
+            await userToolCacheService.invalidateUserToolCache(userId);
+
+            // Fetch fresh available tools
+            const availableTools = await providerAwareFilter.getAvailableToolsForUser(userId);
+
             try {
                 const warmSuccess = await nangoService.warmConnection('gmail', connectionId);
-                streamManager.sendChunk(sessionId, { type: 'connection_updated_ack', content: { warmed: warmSuccess } });
+
+                // Send updated tools and connection status to client
+                streamManager.sendChunk(sessionId, {
+                    type: 'tools_updated',
+                    content: {
+                        tools: availableTools,
+                        warmed: warmSuccess
+                    }
+                } as unknown as StreamChunk);
+
+                logger.info('Connection updated and tools refreshed', {
+                    userId,
+                    toolCount: availableTools.length,
+                    warmed: warmSuccess
+                });
+
+                // Notify all other active sessions for this user
+                await notifyUserOfToolChanges(userId);
             } catch (error: any) {
                 logger.error('Connection warming on update failed', { userId, connectionId: '***', error: error.message });
-                streamManager.sendChunk(sessionId, { type: 'connection_updated_ack', content: { warmed: false } });
+                streamManager.sendChunk(sessionId, {
+                    type: 'tools_updated',
+                    content: {
+                        tools: availableTools,
+                        warmed: false
+                    }
+                } as unknown as StreamChunk);
             }
             return;
         }
@@ -756,10 +852,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                     await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
                     logger.info('Run state updated with assistant response', { sessionId });
                 } else {
-                    logger.warn('No final conversational response generated after tool execution', {
+                    // LLM failed to generate a summary, provide a simple fallback
+                    logger.warn('No final conversational response generated after tool execution, using fallback', {
                         sessionId,
                         runId: finalRunState.id
                     });
+
+                    const fallbackMessage = "The actions have been completed successfully.";
+                    await streamText(sessionId, uuidv4(), fallbackMessage);
+
+                    try {
+                        await historyService.recordAssistantMessage(
+                            userId,
+                            sessionId,
+                            fallbackMessage
+                        );
+                    } catch (error: any) {
+                        logger.warn('Failed to record fallback message', { error: error.message });
+                    }
+
+                    finalRunState.assistantResponse = fallbackMessage;
+                    await sessionState.setItem(sessionId, { userId, activeRun: finalRunState });
                 }
             } else if (!conversationalResponse && executableToolCount === 0 && !isPlanRequest) {
                 // Only show fallback if no conversational response was generated, no tools were called,
@@ -1160,6 +1273,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
     ws.on('close', async () => {
         logger.info('Client disconnected', { sessionId });
+
+        // Get user ID before removing session state
+        const state = (await sessionState.getItem(sessionId)) as SessionState;
+        if (state?.userId) {
+            // Unregister session from SessionRegistry
+            await sessionRegistry.unregisterUserSession(state.userId, sessionId);
+            logger.info('Session unregistered from registry', { userId: state.userId, sessionId });
+        }
+
         streamManager.removeConnection(sessionId);
         await sessionState.removeItem(sessionId);
     });
