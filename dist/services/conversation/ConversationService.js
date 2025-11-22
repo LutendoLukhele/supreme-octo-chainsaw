@@ -165,16 +165,19 @@ class ConversationService extends events_1.EventEmitter {
             if (this.providerAwareFilter && _userId) {
                 providerContext = await this.providerAwareFilter.getProviderContextForPrompt(_userId);
             }
+            const isSummaryMode = !currentUserMessage;
+            const currentMessageText = isSummaryMode
+                ? '[SUMMARY MODE] No new user message. Review the tool_calls in the previous assistant message and their corresponding tool results, then provide a warm, conversational summary of what was accomplished.'
+                : currentUserMessage || '';
             const systemPromptContent = mainConversationalPrompt_1.MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE
                 .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '')
+                .replace('{{USER_CURRENT_MESSAGE}}', currentMessageText)
                 .replace('{{PROVIDER_CONTEXT}}', providerContext);
             const messagesForApi = [
                 { role: 'system', content: systemPromptContent }
             ];
             const preparedHistory = this.prepareHistoryForLLM(historyForThisStream);
             messagesForApi.push(...preparedHistory);
-            const isSummaryMode = !currentUserMessage;
             if (isSummaryMode) {
                 logger.info('Summary mode: Messages being sent to LLM', {
                     sessionId,
@@ -188,17 +191,42 @@ class ConversationService extends events_1.EventEmitter {
                     }))
                 });
             }
-            const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
-            logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
-            const responseStream = await this.client.chat.completions.create({
-                model: this.model,
-                messages: messagesForApi,
-                max_tokens: this.maxTokens,
-                tools: toolsForThisStream.length > 0 ? toolsForThisStream : undefined,
-                tool_choice: "auto",
-                stream: true,
-                temperature: 0.5,
-            });
+            let responseStream;
+            if (toolsForThisStream.length > 0) {
+                logger.info('Conversational stream: Calling LLM with tools', {
+                    toolCount: toolsForThisStream.length,
+                    sessionId,
+                    model: this.model,
+                    messageCount: messagesForApi.length,
+                    hasToolChoice: true
+                });
+                responseStream = await this.client.chat.completions.create({
+                    model: this.model,
+                    messages: messagesForApi,
+                    max_tokens: this.maxTokens,
+                    tools: toolsForThisStream,
+                    tool_choice: "auto",
+                    stream: true,
+                    temperature: 0.5,
+                });
+            }
+            else {
+                logger.info('Conversational stream: Calling LLM in summary mode (NO tools)', {
+                    sessionId,
+                    model: this.model,
+                    messageCount: messagesForApi.length,
+                    isSummaryMode: true,
+                    hasToolChoice: false,
+                    systemPromptLength: systemPromptContent.length
+                });
+                responseStream = await this.client.chat.completions.create({
+                    model: this.model,
+                    messages: messagesForApi,
+                    max_tokens: this.maxTokens,
+                    stream: true,
+                    temperature: 0.5,
+                });
+            }
             for await (const chunk of responseStream) {
                 const contentDelta = chunk.choices[0]?.delta?.content;
                 const toolCallsDelta = chunk.choices[0]?.delta?.tool_calls;
@@ -250,6 +278,24 @@ class ConversationService extends events_1.EventEmitter {
                             });
                         }
                     }
+                });
+            }
+            logger.info('Conversational stream: LLM response complete', {
+                sessionId,
+                streamId,
+                contentLength: accumulatedText?.length || 0,
+                hasContent: !!accumulatedText,
+                hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0),
+                toolCallCount: accumulatedToolCalls?.length || 0,
+                isEmpty: !accumulatedText && (!accumulatedToolCalls || accumulatedToolCalls.length === 0)
+            });
+            if (!accumulatedText && (!accumulatedToolCalls || accumulatedToolCalls.length === 0)) {
+                logger.warn('LLM returned empty response (no text, no tool calls)', {
+                    sessionId,
+                    streamId,
+                    isSummaryMode,
+                    messageCount: messagesForApi.length,
+                    toolsAvailable: toolsForThisStream.length > 0
                 });
             }
             const assistantResponse = {

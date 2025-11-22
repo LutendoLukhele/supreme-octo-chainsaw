@@ -272,6 +272,10 @@ wss.on('connection', (ws, req) => {
                 state.activeRun = completedRun;
                 await sessionState.setItem(sessionId, state);
             }
+            if (data.type === 'update_parameter' && data.content) {
+                actionLauncherService.updateParameterValue(sessionId, data.content);
+                return;
+            }
             if (data.type === 'update_active_connection' && data.content) {
                 const { connectionId } = data.content;
                 if (!userId || !connectionId)
@@ -592,21 +596,42 @@ wss.on('connection', (ws, req) => {
                         planLength: finalRunState.toolExecutionPlan.length
                     });
                     finalRunState.toolExecutionPlan.forEach(step => {
-                        if (step.status === 'completed' && step.result) {
+                        if (step.result) {
                             logger.info('Adding tool result to history', {
                                 stepId: step.stepId,
-                                toolName: step.toolCall.name
+                                toolName: step.toolCall.name,
+                                status: step.status
                             });
-                            conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
+                            const resultData = step.status === 'failed'
+                                ? {
+                                    status: 'failed',
+                                    error: step.result.error || 'Unknown error',
+                                    errorDetails: step.result.errorDetails,
+                                    ...step.result.data
+                                }
+                                : step.result.data;
+                            conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, resultData);
                         }
                     });
                     logger.info('Requesting final summary from LLM', { sessionId });
-                    const finalResponseResult = await conversationService.processMessageAndAggregateResults(null, sessionId, (0, uuid_1.v4)());
+                    let finalResponseResult = await conversationService.processMessageAndAggregateResults(null, sessionId, (0, uuid_1.v4)(), userId);
                     logger.info('Final response result received', {
                         sessionId,
                         hasResponse: !!finalResponseResult.conversationalResponse,
                         responseLength: finalResponseResult.conversationalResponse?.length || 0
                     });
+                    if (!finalResponseResult.conversationalResponse?.trim()) {
+                        logger.warn('First summary attempt returned empty, retrying with explicit prompt', {
+                            sessionId,
+                            runId: finalRunState.id
+                        });
+                        finalResponseResult = await conversationService.processMessageAndAggregateResults("Please provide a warm, conversational summary of what you just accomplished based on the tool results above.", sessionId, (0, uuid_1.v4)(), userId);
+                        logger.info('Retry response result received', {
+                            sessionId,
+                            hasResponse: !!finalResponseResult.conversationalResponse,
+                            responseLength: finalResponseResult.conversationalResponse?.length || 0
+                        });
+                    }
                     if (finalResponseResult.conversationalResponse?.trim()) {
                         await streamText(sessionId, (0, uuid_1.v4)(), finalResponseResult.conversationalResponse);
                         try {

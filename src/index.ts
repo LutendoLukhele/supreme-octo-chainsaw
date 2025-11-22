@@ -809,23 +809,41 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                     planLength: finalRunState.toolExecutionPlan.length
                 });
 
-                // Add all completed tool results to history if not already there
+                // Add ALL tool results to history (including failures) to give LLM complete context
                 finalRunState.toolExecutionPlan.forEach(step => {
-                    if (step.status === 'completed' && step.result) {
+                    if (step.result) {
                         logger.info('Adding tool result to history', {
                             stepId: step.stepId,
-                            toolName: step.toolCall.name
+                            toolName: step.toolCall.name,
+                            status: step.status
                         });
-                        conversationService.addToolResultMessageToHistory(sessionId, step.toolCall.id, step.toolCall.name, step.result.data);
+
+                        // Include error details for failed steps so LLM can provide context
+                        const resultData = step.status === 'failed'
+                            ? {
+                                status: 'failed',
+                                error: step.result.error || 'Unknown error',
+                                errorDetails: step.result.errorDetails,
+                                ...step.result.data
+                            }
+                            : step.result.data;
+
+                        conversationService.addToolResultMessageToHistory(
+                            sessionId,
+                            step.toolCall.id,
+                            step.toolCall.name,
+                            resultData
+                        );
                     }
                 });
 
                 // Get the final summary from the LLM
                 logger.info('Requesting final summary from LLM', { sessionId });
-                const finalResponseResult = await conversationService.processMessageAndAggregateResults(
+                let finalResponseResult = await conversationService.processMessageAndAggregateResults(
                     null, // No new user message, forces summary mode
                     sessionId,
-                    uuidv4()
+                    uuidv4(),
+                    userId
                 );
 
                 logger.info('Final response result received', {
@@ -833,6 +851,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                     hasResponse: !!finalResponseResult.conversationalResponse,
                     responseLength: finalResponseResult.conversationalResponse?.length || 0
                 });
+
+                // If LLM returned empty response, retry once with explicit prompt
+                if (!finalResponseResult.conversationalResponse?.trim()) {
+                    logger.warn('First summary attempt returned empty, retrying with explicit prompt', {
+                        sessionId,
+                        runId: finalRunState.id
+                    });
+
+                    finalResponseResult = await conversationService.processMessageAndAggregateResults(
+                        "Please provide a warm, conversational summary of what you just accomplished based on the tool results above.",
+                        sessionId,
+                        uuidv4(),
+                        userId
+                    );
+
+                    logger.info('Retry response result received', {
+                        sessionId,
+                        hasResponse: !!finalResponseResult.conversationalResponse,
+                        responseLength: finalResponseResult.conversationalResponse?.length || 0
+                    });
+                }
 
                 if (finalResponseResult.conversationalResponse?.trim()) {
                     await streamText(sessionId, uuidv4(), finalResponseResult.conversationalResponse);

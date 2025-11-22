@@ -226,9 +226,15 @@ export class ConversationService extends EventEmitter {
                 providerContext = await this.providerAwareFilter.getProviderContextForPrompt(_userId);
             }
 
+            // In summary mode (no current message), make it explicit what the LLM should do
+            const isSummaryMode = !currentUserMessage;
+            const currentMessageText = isSummaryMode
+                ? '[SUMMARY MODE] No new user message. Review the tool_calls in the previous assistant message and their corresponding tool results, then provide a warm, conversational summary of what was accomplished.'
+                : currentUserMessage || '';
+
             const systemPromptContent = MAIN_CONVERSATIONAL_SYSTEM_PROMPT_TEMPLATE
                 .replace('{{USER_INITIAL_QUERY}}', initialUserQuery)
-                .replace('{{USER_CURRENT_MESSAGE}}', currentUserMessage || '')
+                .replace('{{USER_CURRENT_MESSAGE}}', currentMessageText)
                 .replace('{{PROVIDER_CONTEXT}}', providerContext);
 
             const messagesForApi: Message[] = [
@@ -238,7 +244,6 @@ export class ConversationService extends EventEmitter {
             messagesForApi.push(...preparedHistory);
 
             // Debug: Log the messages being sent to LLM, especially in summary mode
-            const isSummaryMode = !currentUserMessage;
             if (isSummaryMode) {
                 logger.info('Summary mode: Messages being sent to LLM', {
                     sessionId,
@@ -253,19 +258,44 @@ export class ConversationService extends EventEmitter {
                 });
             }
 
-            // Always provide the tools. The prompt guides the LLM on when to use them.
-            const finalToolsForStream = [...toolsForThisStream, PLANNER_META_TOOL];
-            logger.info('Conversational stream running with tools enabled.', { toolCount: finalToolsForStream?.length });
-
-            const responseStream = await this.client.chat.completions.create({
-                model: this.model,
-                messages: messagesForApi as any,
-                max_tokens: this.maxTokens,
-                tools: toolsForThisStream.length > 0 ? toolsForThisStream : undefined,
-                tool_choice: "auto", // FIX: Explicitly allow the LLM to choose a tool
-                stream: true,
-                temperature: 0.5,
-            });
+            // Build API parameters conditionally based on whether tools are available
+            // Only include tools and tool_choice when tools are actually available
+            // This prevents confusing the LLM in summary mode
+            let responseStream;
+            if (toolsForThisStream.length > 0) {
+                logger.info('Conversational stream: Calling LLM with tools', {
+                    toolCount: toolsForThisStream.length,
+                    sessionId,
+                    model: this.model,
+                    messageCount: messagesForApi.length,
+                    hasToolChoice: true
+                });
+                responseStream = await this.client.chat.completions.create({
+                    model: this.model,
+                    messages: messagesForApi as any,
+                    max_tokens: this.maxTokens,
+                    tools: toolsForThisStream,
+                    tool_choice: "auto",
+                    stream: true,
+                    temperature: 0.5,
+                });
+            } else {
+                logger.info('Conversational stream: Calling LLM in summary mode (NO tools)', {
+                    sessionId,
+                    model: this.model,
+                    messageCount: messagesForApi.length,
+                    isSummaryMode: true,
+                    hasToolChoice: false,
+                    systemPromptLength: systemPromptContent.length
+                });
+                responseStream = await this.client.chat.completions.create({
+                    model: this.model,
+                    messages: messagesForApi as any,
+                    max_tokens: this.maxTokens,
+                    stream: true,
+                    temperature: 0.5,
+                });
+            }
 
             for await (const chunk of responseStream) {
                 const contentDelta = chunk.choices[0]?.delta?.content;
@@ -327,6 +357,29 @@ export class ConversationService extends EventEmitter {
                     }
                 });
             }
+
+            // Log the complete LLM response for debugging
+            logger.info('Conversational stream: LLM response complete', {
+                sessionId,
+                streamId,
+                contentLength: accumulatedText?.length || 0,
+                hasContent: !!accumulatedText,
+                hasToolCalls: !!(accumulatedToolCalls && accumulatedToolCalls.length > 0),
+                toolCallCount: accumulatedToolCalls?.length || 0,
+                isEmpty: !accumulatedText && (!accumulatedToolCalls || accumulatedToolCalls.length === 0)
+            });
+
+            // Warn if LLM returned completely empty response (neither text nor tool calls)
+            if (!accumulatedText && (!accumulatedToolCalls || accumulatedToolCalls.length === 0)) {
+                logger.warn('LLM returned empty response (no text, no tool calls)', {
+                    sessionId,
+                    streamId,
+                    isSummaryMode,
+                    messageCount: messagesForApi.length,
+                    toolsAvailable: toolsForThisStream.length > 0
+                });
+            }
+
             // After the stream is complete, add the assistant's text response to history.
             // Include tool_calls if any were made - this is critical for the LLM to understand
             // the context when we later add tool results and generate a summary.
