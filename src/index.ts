@@ -12,6 +12,7 @@ import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
 import Groq from 'groq-sdk';
 import * as storage from 'node-persist';
+import path from 'path';
 
 // --- Monitoring & Observability ---
 import { initializeTelemetry } from './monitoring/telemetry';
@@ -92,7 +93,7 @@ import { groqService } from './services/groq.service';
 import { responseParserService } from './services/response-parser.service';
 import { documentService } from './services/document.service';
 import { artifactGeneratorService } from './services/artifact-generator.service';
-import artifactsRouter from './routes/artifacts';
+import { createArtifactsRouter } from './routes/artifacts';
 import documentsRouter from './routes/documents';
 import exportRouter from './routes/export';
 import interpretRouter from './routes/interpret';
@@ -102,17 +103,25 @@ import historyRouter from './routes/history';
 import { stripeService } from './services/StripeService';
 import { revenueCatService } from './services/RevenueCatService';
 import { subscriptionService } from './services/SubscriptionService';
+import { createWorkflowsRouter } from './routes/workflows';
+import { WorkflowComposeRequestSchema, WorkflowSpec } from '@aso/workflow-contracts';
+import { WorkflowCatalogService } from './services/workflow/WorkflowCatalogService';
+import { WorkflowSpecFactory } from './services/workflow/WorkflowSpecFactory';
+import { WorkflowCompilerService } from './services/workflow/WorkflowCompilerService';
+import { WorkflowStore } from './services/workflow/WorkflowStore';
+import { ArtifactStore } from './services/workflow/ArtifactStore';
+import { IntentClassifierService, resolveClassifierModelDirs } from './services/intent/IntentClassifierService';
 
 // --- Service Initialization ---
 const groqClient = new Groq({ apiKey: CONFIG.GROQ_API_KEY });
 const toolConfigManager = new ToolConfigManager();
 
 // Initialize database connection for provider-aware filtering
-if (!process.env.DATABASE_URL) {
+if (!CONFIG.DATABASE_URL) {
     logger.error("FATAL: DATABASE_URL environment variable is not set. The application cannot start without it.");
     throw new Error("DATABASE_URL environment variable is not set.");
 }
-const sql = neon(process.env.DATABASE_URL);
+const sql = neon(CONFIG.DATABASE_URL);
 
 // Initialize caching and session tracking services
 const userToolCacheService = new UserToolCacheService(redis);
@@ -137,6 +146,14 @@ const toolOrchestrator = new ToolOrchestrator({
 const plannerService = new PlannerService(CONFIG.GROQ_API_KEY, CONFIG.MAX_TOKENS, toolConfigManager, providerAwareFilter);
 const beatEngine = new BeatEngine(toolConfigManager);
 const historyService = new HistoryService(redis);
+const workflowCatalogService = new WorkflowCatalogService();
+const workflowSpecFactory = new WorkflowSpecFactory(workflowCatalogService);
+const workflowCompilerService = new WorkflowCompilerService();
+const workflowStore = new WorkflowStore(sql);
+const workflowArtifactStore = new ArtifactStore(sql);
+const workflowIntentClassifier = new IntentClassifierService(path.join(process.cwd(), 'config', 'plan-templates'));
+const { intentModelDir, nerModelDir } = resolveClassifierModelDirs();
+void workflowIntentClassifier.loadONNXModel(intentModelDir, nerModelDir);
 
 // Initialize circuit breakers for external APIs
 const nangoCircuitBreaker = new CircuitBreaker(logger, { failureThreshold: 5, timeout: 60000 });
@@ -217,9 +234,18 @@ setInterval(() => {
 }, 60_000);
 
 // --- Session State Management ---
+interface PendingPlan {
+    actionPlan: ActionPlan;
+    messageId: string;
+    runId: string;
+    enrichedPlan: any[];
+    workflowId?: string;
+}
+
 interface SessionState {
     userId: string;
     activeRun?: Run;
+    pendingPlan?: PendingPlan;
 }
 const sessionState: storage.LocalStorage = storage.create({ dir: 'sessions' });
 (async () => {
@@ -239,6 +265,71 @@ async function streamText(sessionId: string, messageId: string, text: string) {
     }
     streamManager.sendChunk(sessionId, { type: 'conversational_text_segment', content: { status: 'END_STREAM' }, messageId, isFinal: true } as StreamChunk);
     streamManager.sendChunk(sessionId, { type: 'stream_end', isFinal: true, messageId, streamType: 'conversational' } as StreamChunk);
+}
+
+function buildWorkflowPlanOverview(actionPlan: ActionPlan, messageId: string): any[] {
+    return actionPlan.map((step: ActionStep) => {
+        const toolDef: any = toolConfigManager.getToolDefinition(step.tool);
+        return {
+            id: step.id,
+            messageId,
+            toolName: step.tool,
+            toolDisplayName: toolDef?.display_name || toolDef?.name || step.tool,
+            description: step.intent,
+            status: step.status,
+            arguments: step.arguments || {},
+            parameters: [],
+            missingParameters: [],
+            error: null,
+            result: null,
+            dependsOn: step.dependsOn ?? [],
+            workflowStepId: step.workflowStepId,
+            artifactSpecId: step.artifactSpecId,
+        };
+    });
+}
+
+async function prepareWorkflowPlan(
+    workflow: WorkflowSpec,
+    sessionId: string,
+    userId: string,
+    messageId: string,
+    activeConnectionId?: string,
+): Promise<{ actionPlan: ActionPlan; run: Run; enrichedPlan: any[] }> {
+    const { compiledPlan, actionPlan, artifactSpecs } = workflowCompilerService.compile(workflow);
+    await workflowStore.saveWorkflow(workflow, compiledPlan);
+    await workflowArtifactStore.saveArtifacts(artifactSpecs);
+
+    const run = RunManager.createRun({
+        sessionId,
+        userId,
+        userInput: workflow.displayText,
+        toolExecutionPlan: [],
+        connectionId: activeConnectionId,
+    });
+    run.workflowId = workflow.id;
+    run.executionMode = 'dag';
+    run.toolExecutionPlan = actionPlan.map((step: ActionStep) => ({
+        stepId: step.id,
+        toolCall: {
+            id: step.id,
+            name: step.tool,
+            arguments: step.arguments,
+            sessionId,
+            userId,
+        },
+        status: 'pending',
+        startedAt: new Date().toISOString(),
+        dependsOn: step.dependsOn ?? [],
+        workflowStepId: step.workflowStepId,
+        artifactSpecId: step.artifactSpecId,
+    }));
+
+    return {
+        actionPlan,
+        run,
+        enrichedPlan: buildWorkflowPlanOverview(actionPlan, messageId),
+    };
 }
 
 // --- WebSocket Server Setup ---
@@ -337,13 +428,14 @@ app.get('/health/detailed', (req, res) => {
 });
 
 // --- API Routes ---
-app.use('/api/artifacts', artifactsRouter);
+app.use('/api/artifacts', createArtifactsRouter(sql));
 app.use('/api/documents', documentsRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/interpret', interpretRouter);
 app.use('/api/sessions', sessionsRouter);
 app.locals.historyService = historyService;
 app.use('/history', historyRouter);
+app.use('/api/workflows', createWorkflowsRouter(sql));
 
 // --- Cortex Routes ---
 app.use('/api/cortex', createCortexRouter(cortexStore, cortexCompiler, cortexRuntime));
@@ -977,6 +1069,35 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         if (!state) throw new Error('Not authenticated');
         const { userId } = state;
 
+        // --- CONFIRM WORKFLOW PLAN ---
+        if (data.type === 'confirm_plan') {
+            const pending = state.pendingPlan;
+            const run = state.activeRun;
+            if (!pending || !run) {
+                streamManager.sendChunk(sessionId, {
+                    type: 'error',
+                    content: 'No pending plan to confirm.',
+                } as unknown as StreamChunk);
+                return;
+            }
+
+            state.pendingPlan = undefined;
+            await sessionState.setItem(sessionId, state);
+            await actionLauncherService.processActionPlan(
+                pending.actionPlan,
+                sessionId,
+                userId,
+                pending.messageId,
+                toolOrchestrator,
+                run,
+            );
+
+            const completedRun = await planExecutorService.executePlan(run, userId);
+            state.activeRun = completedRun;
+            await sessionState.setItem(sessionId, state);
+            return;
+        }
+
         // --- EXECUTE ACTION (CONFIRMED BY CLIENT) ---
         if (data.type === 'execute_action' && data.content) {
             const actionPayload = data.content as ExecuteActionPayload;
@@ -1365,6 +1486,67 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             return;
         }
 
+        // --- TYPED WORKFLOW HANDLER ---
+        if (data.type === 'workflow_compose') {
+            const messageId = uuidv4();
+            const parsed = WorkflowComposeRequestSchema.safeParse(data.content ?? data.workflow);
+            if (!parsed.success) {
+                streamManager.sendChunk(sessionId, {
+                    type: 'error',
+                    content: `Invalid workflow payload: ${parsed.error.issues.map(issue => issue.message).join(', ')}`,
+                    messageId,
+                    isFinal: true,
+                } as StreamChunk);
+                return;
+            }
+
+            try {
+                const activeConnectionId = await redis.get(`active-connection:${userId}`) || undefined;
+                const workflow = workflowSpecFactory.fromComposeRequest(parsed.data, { userId, sessionId });
+                const { actionPlan, run, enrichedPlan } = await prepareWorkflowPlan(
+                    workflow,
+                    sessionId,
+                    userId,
+                    messageId,
+                    activeConnectionId,
+                );
+
+                state.activeRun = run;
+                state.pendingPlan = {
+                    actionPlan,
+                    messageId,
+                    runId: run.id,
+                    enrichedPlan,
+                    workflowId: workflow.id,
+                };
+                await sessionState.setItem(sessionId, state);
+                streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
+                streamManager.sendChunk(sessionId, {
+                    type: 'plan_generated',
+                    content: {
+                        messageId,
+                        workflowId: workflow.id,
+                        workflowSpec: workflow,
+                        planOverview: enrichedPlan,
+                        analysis: `${enrichedPlan.length} actions ready from typed workflow. Review and confirm to run.`,
+                        requiresConfirmation: true,
+                        runId: run.id,
+                    },
+                    messageId,
+                    isFinal: true,
+                } as StreamChunk);
+            } catch (error: any) {
+                logger.error('Failed to prepare typed workflow', { sessionId, userId, error: error?.message ?? error });
+                streamManager.sendChunk(sessionId, {
+                    type: 'error',
+                    content: 'Unable to prepare this workflow right now.',
+                    messageId,
+                    isFinal: true,
+                } as StreamChunk);
+            }
+            return;
+        }
+
         // --- CONTENT HANDLER / PLAN GENERATION ---
         if (data.type === 'content' && typeof data.content === 'string') {
             const messageId = uuidv4();
@@ -1374,6 +1556,48 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
                 await historyService.recordUserMessage(userId, sessionId, data.content);
             } catch (error: any) {
                 logger.warn('Failed to record user message in history', { error: error.message });
+            }
+
+            const classifiedWorkflow = await workflowIntentClassifier.classifyKnownWorkflow(data.content);
+            const recoveredWorkflow = classifiedWorkflow && classifiedWorkflow.confidence >= 0.85
+                ? workflowSpecFactory.fromClassification(classifiedWorkflow, data.content, { userId, sessionId })
+                : null;
+
+            if (recoveredWorkflow) {
+                const activeConnectionId = await redis.get(`active-connection:${userId}`) || undefined;
+                const { actionPlan, run, enrichedPlan } = await prepareWorkflowPlan(
+                    recoveredWorkflow,
+                    sessionId,
+                    userId,
+                    messageId,
+                    activeConnectionId,
+                );
+
+                state.activeRun = run;
+                state.pendingPlan = {
+                    actionPlan,
+                    messageId,
+                    runId: run.id,
+                    enrichedPlan,
+                    workflowId: recoveredWorkflow.id,
+                };
+                await sessionState.setItem(sessionId, state);
+                streamManager.sendChunk(sessionId, { type: 'run_updated', content: run });
+                streamManager.sendChunk(sessionId, {
+                    type: 'plan_generated',
+                    content: {
+                        messageId,
+                        workflowId: recoveredWorkflow.id,
+                        workflowSpec: recoveredWorkflow,
+                        planOverview: enrichedPlan,
+                        analysis: `${enrichedPlan.length} actions ready from recognized workflow. Review and confirm to run.`,
+                        requiresConfirmation: true,
+                        runId: run.id,
+                    },
+                    messageId,
+                    isFinal: true,
+                } as StreamChunk);
+                return;
             }
 
             const processedResult = await conversationService.processMessageAndAggregateResults(

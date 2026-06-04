@@ -13,15 +13,20 @@ services:
       PORT: 8080
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_pass}@redis:6379
       DATABASE_URL: ${DATABASE_URL}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:8080}
+      OPEN_AI_API_KEY: ${OPEN_AI_API_KEY}
       GROQ_API_KEY: ${GROQ_API_KEY}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
       FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY}
       FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL}
       NANGO_SECRET_KEY: ${NANGO_SECRET_KEY}
+      NANGO_BASE_URL: ${NANGO_BASE_URL:-http://host.docker.internal:3003}
+      NANGO_PUBLIC_BASE_URL: ${NANGO_PUBLIC_BASE_URL:-http://localhost:3003}
+      NANGO_WEBHOOK_SECRET: ${NANGO_WEBHOOK_SECRET:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:54059/app,https://app.geniusai.live,https://app.geniusai.live/app}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:54059,https://app.geniusai.live}
       # Bootstrap Rate Limiting
       RATE_LIMIT_ENABLED: "true"
       RATE_LIMIT_WINDOW_MS: "60000"
@@ -31,6 +36,8 @@ services:
       RATE_LIMIT_WEBHOOK_MAX: "100"
       # LLM Optimization - disable automatic argument fixing to reduce token usage
       LLM_ARGUMENT_FIX_ENABLED: "false"
+      ML_INTENT_MODEL_DIR: /app/models/intent_classifier
+      ML_NER_MODEL_DIR: /app/models/ner_extractor
       # Capacity Monitoring Thresholds
       CPU_THRESHOLD_WARNING: "70"
       CPU_THRESHOLD_CRITICAL: "85"
@@ -49,6 +56,8 @@ services:
       - ./logs:/app/logs
       - ./sessions:/app/sessions
       - ./data:/app/data
+      - ${ASO_ARTIFACTS_PATH:-./.data/artifacts}:/app/.data/artifacts
+      - ${ASO_MODEL_BUNDLE_PATH:-./.data/model-bundles/current/models}:/app/models:ro
     restart: unless-stopped
     networks:
       - backend-network

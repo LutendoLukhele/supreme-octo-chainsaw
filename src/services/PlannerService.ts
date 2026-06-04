@@ -29,6 +29,9 @@ export interface ActionStep {
   stepNumber?: number;
   totalSteps?: number;
   description?: string;
+  dependsOn?: string[];
+  workflowStepId?: string;
+  artifactSpecId?: string;
 }
 
 export type ActionPlan = ActionStep[];
@@ -786,4 +789,4 @@ public async generatePlan(
     return [];
   }
 }
-} 
+}

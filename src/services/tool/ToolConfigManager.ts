@@ -37,7 +37,7 @@ export interface ToolConfig {
   display_name?: string;
   providerConfigKey?: string;
   parameters?: ToolInputSchema;
-  source?: 'cache' | 'action';
+  source?: 'cache' | 'action' | 'desktop' | 'internal';
   cache_model?: string;
 }
 

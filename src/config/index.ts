@@ -28,7 +28,10 @@ if (dotenvResult.error) {
 
 // Helper function to get environment variables with defaults and critical checks
 const getEnvVar = (key: string, defaultValue?: string, isCritical: boolean = false): string => {
-  const value = process.env[key];
+  const value = process.env[key]
+    ?.trim()
+    .replace(/^(['"])(.*)\1$/, '$2')
+    .replace(/\\n/g, '\n');
   // console.log(`[config/index.ts] getEnvVar: Reading process.env.${key} - Value: '${value}'`);
   if (value === undefined || value === '') {
     if (defaultValue !== undefined) {
@@ -48,7 +51,7 @@ const getEnvVar = (key: string, defaultValue?: string, isCritical: boolean = fal
 
 
 export const CONFIG = {
-  REDIS_URL: getEnvVar('REDIS_URL', 'redis://default:ewgkpSkF91VxHqMdZJ5mqHRpqaOut6jB@redis-15785.c276.us-east-1-2.ec2.redns.redis-cloud.com:15785'),
+  REDIS_URL: getEnvVar('REDIS_URL', undefined, true),
   OPEN_AI_API_KEY: getEnvVar('OPEN_AI_API_KEY', undefined, true),
   GROQ_API_KEY: getEnvVar('GROQ_API_KEY', undefined, true),
   CONNECTION_ID: getEnvVar('CONNECTION_ID', '2154ba8d-ce48-4a46-b4d3-295f1aa9e450'),
@@ -73,6 +76,11 @@ export const CONFIG = {
   STRIPE_PRICE_ID: getEnvVar('STRIPE_PRICE_ID', undefined, false),
   STRIPE_WEBHOOK_SECRET: getEnvVar('STRIPE_WEBHOOK_SECRET', undefined, false),
   APP_SUCCESS_URL: getEnvVar('APP_SUCCESS_URL', 'https://yourapp.com/success', false),
+  PUBLIC_API_BASE_URL: getEnvVar(
+    'PUBLIC_API_BASE_URL',
+    `http://localhost:${process.env.PORT || '8080'}`,
+    false,
+  ).replace(/\/+$/, ''),
   DATABASE_URL: getEnvVar('DATABASE_URL', undefined, true),
   NODE_ENV: nodeEnv,
   // RevenueCat secret for backend-to-backend API

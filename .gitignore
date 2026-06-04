@@ -99,6 +99,8 @@ docs/api/
 # Cache
 .cache/
 .eslintcache
+.data/
+sessions/
 
 # Backup files
 *.bak

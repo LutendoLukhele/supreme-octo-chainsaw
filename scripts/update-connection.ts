@@ -4,13 +4,20 @@
 import { neon } from '@neondatabase/serverless';
 import Redis from 'ioredis';
 
-const sql = neon('postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require');
-const redis = new Redis('redis://default:ewgkpSkF91VxHqMdZJ5mqHRpqaOut6jB@redis-15785.c276.us-east-1-2.ec2.redns.redis-cloud.com:15785');
+function requiredEnv(name: string): string {
+  const value = process.env[name]
+    ?.trim()
+    .replace(/^(['"])(.*)\1$/, '$2');
+  if (!value) throw new Error(`Missing required environment variable ${name}`);
+  return value;
+}
 
-const USER_ID = '7CSWY89B4sT7nj3ixd9mvgcJPSm2';
-const OLD_CONNECTION_ID = 'bb40121a-ebaf-4739-b56f-9da1f4e936d3';
-const NEW_CONNECTION_ID = '285ed357-8b82-41a9-aae1-bd0d84fe7e3a';
-const PROVIDER = 'google-mail-ynxw';
+const sql = neon(requiredEnv('DATABASE_URL'));
+const redis = new Redis(requiredEnv('REDIS_URL'));
+const USER_ID = requiredEnv('ASO_TARGET_USER_ID');
+const OLD_CONNECTION_ID = requiredEnv('ASO_OLD_CONNECTION_ID');
+const NEW_CONNECTION_ID = requiredEnv('ASO_NEW_CONNECTION_ID');
+const PROVIDER = process.env.ASO_TARGET_PROVIDER?.trim() || 'google-mail-ynxw';
 
 async function updateConnection() {
   console.log('🔧 Updating Gmail connection to working one...\n');

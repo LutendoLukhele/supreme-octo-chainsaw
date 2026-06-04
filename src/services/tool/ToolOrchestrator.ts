@@ -14,6 +14,10 @@ import { neon } from '@neondatabase/serverless';
 import { getCanonicalProviderChain } from './providerAliases';
 import { CRMEntityCacheService } from '../data/CRMEntityCacheService';
 import { ToolExecutionDeduplicationService } from './ToolExecutionDeduplicationService';
+import { ArtifactStore } from '../workflow/ArtifactStore';
+import { ArtifactCompilerService } from '../artifacts/ArtifactCompilerService';
+import { DesktopMethodService } from '../desktop/DesktopMethodService';
+import { InternalEmailDraftService } from '../artifacts/InternalEmailDraftService';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -22,7 +26,7 @@ const logger = winston.createLogger({
 });
 
 const redis = new Redis(CONFIG.REDIS_URL!);
-const sql = neon('postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require');
+const sql = neon(CONFIG.DATABASE_URL);
 
 interface ResolvedConnection {
     connectionId: string;
@@ -35,6 +39,10 @@ export class ToolOrchestrator extends BaseService {
     private normalizationService: ResponseNormalizationService;
     private entityCache: CRMEntityCacheService;
     private deduplicationService: ToolExecutionDeduplicationService;
+    private artifactStore: ArtifactStore;
+    private artifactCompilerService: ArtifactCompilerService;
+    private desktopMethodService: DesktopMethodService;
+    private internalEmailDraftService: InternalEmailDraftService;
     logger: any;
 
     constructor(config: { logger: winston.Logger; nangoService: NangoService; toolConfigManager: ToolConfigManager; redisClient?: Redis; [key: string]: any; }) {
@@ -45,6 +53,10 @@ export class ToolOrchestrator extends BaseService {
         const redisClient = config.redisClient || new Redis(CONFIG.REDIS_URL!);
         this.entityCache = new CRMEntityCacheService(redisClient);
         this.deduplicationService = new ToolExecutionDeduplicationService(this.entityCache);
+        this.artifactStore = new ArtifactStore(sql);
+        this.artifactCompilerService = new ArtifactCompilerService(this.artifactStore);
+        this.desktopMethodService = new DesktopMethodService(this.artifactCompilerService);
+        this.internalEmailDraftService = new InternalEmailDraftService(this.artifactStore);
         logger.info("ToolOrchestrator initialized with CRM entity caching and deduplication.");
     }
 
@@ -143,7 +155,16 @@ export class ToolOrchestrator extends BaseService {
 
             let nangoResult: any;
 
-            if (source === 'cache') {
+            if (toolName === 'create_internal_email_draft') {
+                const input = toolCallToExecute.arguments?.input ?? {};
+                nangoResult = await this.internalEmailDraftService.create(input.artifactSpec, input.sourceData);
+            } else if (source === 'desktop') {
+                const input = toolCallToExecute.arguments?.input ?? {};
+                nangoResult = await this.desktopMethodService.generateFile({
+                    artifactSpec: input.artifactSpec,
+                    data: input.data,
+                });
+            } else if (source === 'cache') {
                 this.logger.info(`Routing ${toolName} to cache-based execution`);
                 nangoResult = await this.executeCacheTool(toolCallToExecute);
             } else {
@@ -1485,4 +1506,3 @@ export class ToolOrchestrator extends BaseService {
         return 'nango';
     }
 }
-

@@ -23,6 +23,9 @@ export interface ToolExecutionStep {
   startedAt: string;
   finishedAt?: string;
   result?: ToolResult;
+  dependsOn?: string[];
+  workflowStepId?: string;
+  artifactSpecId?: string;
 }
 
 export type RunStatus = 'pending' | 'completed' | 'failed' | 'running' | 'success'| 'partial_success';
@@ -43,4 +46,6 @@ export interface Run {
   connectionId?: string;
   contextMessages?: any[];
   assistantResponse?: string;
+  workflowId?: string;
+  executionMode?: 'sequential' | 'dag';
 }

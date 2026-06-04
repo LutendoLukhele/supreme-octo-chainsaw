@@ -1,13 +1,19 @@
 // src/routes/artifacts.ts
 
 import express, { Request, Response } from 'express';
+import fs from 'fs/promises';
+import path from 'path';
+import { NeonQueryFunction } from '@neondatabase/serverless';
 import { artifactGeneratorService } from '../services/artifact-generator.service';
 import { codeInterpreterService } from '../services/code-interpreter.service';
 import { sessionService } from '../services/session.service';
+import { ArtifactStore } from '../services/workflow/ArtifactStore';
 
-const router = express.Router();
+export function createArtifactsRouter(sql: NeonQueryFunction<false, false>) {
+    const router = express.Router();
+    const artifactStore = new ArtifactStore(sql);
 
-router.post('/generate/code', async (req: Request, res: Response) => {
+    router.post('/generate/code', async (req: Request, res: Response) => {
     try {
         const { prompt, language, context, sessionId, userId } = req.body as {
             prompt: string;
@@ -34,9 +40,9 @@ router.post('/generate/code', async (req: Request, res: Response) => {
     } catch (error: any) {
         res.status(500).json({ error: error?.message ?? 'Failed to generate code artifact' });
     }
-});
+    });
 
-router.post('/generate/analysis', async (req: Request, res: Response) => {
+    router.post('/generate/analysis', async (req: Request, res: Response) => {
     try {
         const { data, analysisType, context, sessionId, userId } = req.body as {
             data: unknown;
@@ -63,9 +69,9 @@ router.post('/generate/analysis', async (req: Request, res: Response) => {
     } catch (error: any) {
         res.status(500).json({ error: error?.message ?? 'Failed to generate analysis artifact' });
     }
-});
+    });
 
-router.post('/generate/visualization', async (req: Request, res: Response) => {
+    router.post('/generate/visualization', async (req: Request, res: Response) => {
     try {
         const { data, chartType, title, sessionId, userId } = req.body as {
             data: unknown;
@@ -92,9 +98,9 @@ router.post('/generate/visualization', async (req: Request, res: Response) => {
     } catch (error: any) {
         res.status(500).json({ error: error?.message ?? 'Failed to generate visualization artifact' });
     }
-});
+    });
 
-router.post('/:artifactId/execute', async (req: Request, res: Response) => {
+    router.post('/:artifactId/execute', async (req: Request, res: Response) => {
     try {
         const { artifactId } = req.params;
         const { artifact, context } = req.body as {
@@ -133,6 +139,41 @@ router.post('/:artifactId/execute', async (req: Request, res: Response) => {
     } catch (error: any) {
         res.status(500).json({ error: error?.message ?? 'Failed to execute artifact' });
     }
-});
+    });
 
-export default router;
+    router.get('/:artifactId/download', async (req: Request, res: Response) => {
+    try {
+        const artifact = await artifactStore.getArtifactById(req.params.artifactId);
+        if (!artifact) {
+            res.status(404).json({ error: 'Artifact not found' });
+            return;
+        }
+        if (artifact.status !== 'ready' || !artifact.renderedPath) {
+            res.status(409).json({ error: 'Artifact is not ready for download' });
+            return;
+        }
+
+        const artifactRoot = path.resolve(process.cwd(), '.data', 'artifacts');
+        const resolvedPath = path.resolve(artifact.renderedPath);
+        if (resolvedPath !== artifactRoot && !resolvedPath.startsWith(`${artifactRoot}${path.sep}`)) {
+            res.status(403).json({ error: 'Artifact path is outside the managed artifact directory' });
+            return;
+        }
+
+        await fs.access(resolvedPath);
+        res.download(
+            resolvedPath,
+            artifact.renderedFilename ?? path.basename(resolvedPath),
+            { dotfiles: 'allow' },
+        );
+    } catch (error: any) {
+        if (error?.code === 'ENOENT') {
+            res.status(404).json({ error: 'Artifact file not found' });
+            return;
+        }
+        res.status(500).json({ error: error?.message ?? 'Failed to download artifact' });
+    }
+    });
+
+    return router;
+}

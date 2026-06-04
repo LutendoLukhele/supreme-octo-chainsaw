@@ -3,11 +3,18 @@
 
 import { neon } from '@neondatabase/serverless';
 
-const sql = neon('postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require');
+function requiredEnv(name: string): string {
+  const value = process.env[name]
+    ?.trim()
+    .replace(/^(['"])(.*)\1$/, '$2');
+  if (!value) throw new Error(`Missing required environment variable ${name}`);
+  return value;
+}
 
-const USER_ID = '7CSWY89B4sT7nj3ixd9mvgcJPSm2';
-const CORRECT_CONNECTION_ID = 'bb40121a-ebaf-4739-b56f-9da1f4e936d3';
-const PROVIDER = 'google-mail-ynxw';
+const sql = neon(requiredEnv('DATABASE_URL'));
+const USER_ID = requiredEnv('ASO_TARGET_USER_ID');
+const CORRECT_CONNECTION_ID = requiredEnv('ASO_TARGET_CONNECTION_ID');
+const PROVIDER = process.env.ASO_TARGET_PROVIDER?.trim() || 'google-mail-ynxw';
 
 async function fixGmailConnection() {
   console.log('🔧 Fixing Gmail connection...\n');
