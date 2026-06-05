@@ -5,7 +5,13 @@ import { neon } from '@neondatabase/serverless';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require';
+const DATABASE_URL = process.env.DATABASE_URL
+  ?.trim()
+  .replace(/^(['"])(.*)\1$/, '$2');
+
+if (!DATABASE_URL) {
+  throw new Error('Missing required environment variable DATABASE_URL');
+}
 
 async function runMigration(migrationNumber: string = '001') {
   const sql = neon(DATABASE_URL);

@@ -7,7 +7,13 @@ import { neon } from '@neondatabase/serverless';
 const BASE_URL = 'http://localhost:8080';
 const TEST_USER_ID = 'test-user-cortex-' + Date.now();
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_DZ9VLGrHc7jf@ep-hidden-field-advbvi8f-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require';
+const DATABASE_URL = process.env.DATABASE_URL
+  ?.trim()
+  .replace(/^(['"])(.*)\1$/, '$2');
+
+if (!DATABASE_URL) {
+  throw new Error('Missing required environment variable DATABASE_URL');
+}
 
 async function testCortex() {
   console.log('\n🧪 Cortex Automation System - Comprehensive Test\n');

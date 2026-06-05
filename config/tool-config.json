@@ -1211,6 +1211,55 @@
         },
         "required": ["input"]
       }
+    },
+    {
+      "name": "create_internal_email_draft",
+      "description": "Create durable internal email draft artifacts in ASO.",
+      "source": "internal",
+      "providerConfigKey": "__DESKTOP__",
+      "category": "Desktop",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": { "type": "string", "enum": ["create"] },
+              "artifactSpecId": { "type": "string" },
+              "artifactSpec": { "type": "object" },
+              "sourceData": {}
+            },
+            "required": ["operation", "artifactSpecId", "artifactSpec", "sourceData"]
+          }
+        },
+        "required": ["input"]
+      }
+    },
+    {
+      "name": "generate_file",
+      "description": "Generate a durable PDF, XLSX, or DOCX artifact from workflow data.",
+      "source": "desktop",
+      "providerConfigKey": "__DESKTOP__",
+      "category": "Desktop",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "operation": { "type": "string", "enum": ["generate"] },
+              "format": { "type": "string", "enum": ["xlsx", "docx", "pdf"] },
+              "title": { "type": "string" },
+              "template": { "type": "string" },
+              "artifactSpecId": { "type": "string" },
+              "artifactSpec": { "type": "object" },
+              "data": {}
+            },
+            "required": ["operation", "format", "title", "artifactSpecId", "artifactSpec"]
+          }
+        },
+        "required": ["input"]
+      }
     }
   ],
   "beats": [],

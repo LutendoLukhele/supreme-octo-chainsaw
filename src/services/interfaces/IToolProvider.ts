@@ -52,8 +52,8 @@ export interface ToolConfig {
   /** Parameter schema for tool invocation */
   parameters?: ToolInputSchema;
   
-  /** Data source: 'cache' for reads, 'action' for writes */
-  source?: 'cache' | 'action';
+  /** Data source: reads, provider actions, local desktop actions, or internal actions */
+  source?: 'cache' | 'action' | 'desktop' | 'internal';
   
   /** Cache model name for 'cache' source tools */
   cache_model?: string;
