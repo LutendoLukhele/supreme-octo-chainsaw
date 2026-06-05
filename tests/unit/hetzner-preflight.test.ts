@@ -173,6 +173,22 @@ describe('Hetzner deploy preflight', () => {
     }
   });
 
+  it('rejects the local test auth header escape hatch in strict production mode', () => {
+    const fixture = createFixture();
+    try {
+      const result = runPreflight(fixture.modelRoot, fixture.nangoDist, fixture.artifactRoot, {
+        env: {
+          ASO_ALLOW_TEST_AUTH_HEADER: '1',
+        },
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('ASO_ALLOW_TEST_AUTH_HEADER must be disabled in strict production mode');
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsafe or non-origin CORS entries in strict production mode', () => {
     const fixture = createFixture();
     try {

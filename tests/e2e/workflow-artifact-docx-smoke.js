@@ -20,6 +20,7 @@ require('dotenv').config({ path: path.resolve(process.cwd(), '.env') });
 
 const API_BASE_URL = (process.env.API_BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
 const DATABASE_URL = process.env.DATABASE_URL?.trim().replace(/^(['"])(.*)\1$/, '$2');
+const TEST_USER_ID = process.env.WORKFLOW_SMOKE_USER_ID || 'workflow-docx-smoke';
 
 if (!DATABASE_URL) {
   console.error('Missing DATABASE_URL');
@@ -62,7 +63,9 @@ function apiUrl(route) {
 }
 
 async function fetchOk(route) {
-  const response = await fetch(apiUrl(route));
+  const response = await fetch(apiUrl(route), {
+    headers: { 'x-aso-test-user-id': TEST_USER_ID },
+  });
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`${route} returned ${response.status}: ${text.slice(0, 500)}`);
@@ -85,7 +88,7 @@ async function main() {
         outputPresetId: 'word_summary',
       }],
     },
-    { userId: 'workflow-docx-smoke', sessionId: `workflow-docx-smoke-${Date.now()}` },
+    { userId: TEST_USER_ID, sessionId: `workflow-docx-smoke-${Date.now()}` },
   );
 
   const { compiledPlan, artifactSpecs } = new WorkflowCompilerService().compile(workflow);
@@ -123,7 +126,9 @@ async function main() {
   assert(!Object.prototype.hasOwnProperty.call(directArtifact, 'renderedPath'), 'direct artifact leaked renderedPath', directArtifact);
   assert(!Object.prototype.hasOwnProperty.call(directArtifact, 'filePath'), 'nested artifact leaked filePath', directArtifact);
 
-  const artifactListResponse = await fetch(apiUrl(`/api/workflows/${workflow.id}/artifacts`));
+  const artifactListResponse = await fetch(apiUrl(`/api/workflows/${workflow.id}/artifacts`), {
+    headers: { 'x-aso-test-user-id': TEST_USER_ID },
+  });
   const artifactListJson = await artifactListResponse.json();
   assert(artifactListResponse.ok, 'workflow artifact route failed', artifactListJson);
   const routeArtifactEnvelope = artifactListJson.artifacts?.[0];
@@ -138,7 +143,9 @@ async function main() {
   assert(!Object.prototype.hasOwnProperty.call(routeArtifact, 'filePath'), 'route nested artifact leaked filePath', routeArtifact);
 
   const downloadUrl = new URL(routeArtifact.fileUrl);
-  const downloadResponse = await fetch(apiUrl(downloadUrl.pathname));
+  const downloadResponse = await fetch(apiUrl(downloadUrl.pathname), {
+    headers: { 'x-aso-test-user-id': TEST_USER_ID },
+  });
   const bytes = Buffer.from(await downloadResponse.arrayBuffer());
 
   assert(downloadResponse.ok, `download returned ${downloadResponse.status}`);

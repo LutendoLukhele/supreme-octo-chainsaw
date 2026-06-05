@@ -106,6 +106,21 @@ export class ArtifactStore {
     return rows[0] ? this.fromRow(rows[0]) : null;
   }
 
+  async getArtifactByIdForUser(id: string, userId: string): Promise<ArtifactSpec | null> {
+    const rows = await this.sql`
+      SELECT a.id, a.workflow_id, a.workflow_step_id, a.kind, a.format, a.title,
+             a.sections_json, a.bindings_json, a.status, a.rendered_path,
+             a.rendered_filename, a.byte_length, a.generation_mode,
+             a.preview_rows_json, a.preview_text, a.created_at, a.updated_at
+      FROM workflow_artifacts a
+      INNER JOIN workflow_specs w ON w.id = a.workflow_id
+      WHERE a.id = ${id}
+        AND w.user_id = ${userId}
+      LIMIT 1
+    ` as WorkflowArtifactRow[];
+    return rows[0] ? this.fromRow(rows[0]) : null;
+  }
+
   async listArtifactsByWorkflowId(workflowId: string): Promise<ArtifactSpec[]> {
     const rows = await this.sql`
       SELECT id, workflow_id, workflow_step_id, kind, format, title, sections_json,
@@ -114,6 +129,21 @@ export class ArtifactStore {
       FROM workflow_artifacts
       WHERE workflow_id = ${workflowId}
       ORDER BY created_at ASC
+    ` as WorkflowArtifactRow[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
+  async listArtifactsByWorkflowIdForUser(workflowId: string, userId: string): Promise<ArtifactSpec[]> {
+    const rows = await this.sql`
+      SELECT a.id, a.workflow_id, a.workflow_step_id, a.kind, a.format, a.title,
+             a.sections_json, a.bindings_json, a.status, a.rendered_path,
+             a.rendered_filename, a.byte_length, a.generation_mode,
+             a.preview_rows_json, a.preview_text, a.created_at, a.updated_at
+      FROM workflow_artifacts a
+      INNER JOIN workflow_specs w ON w.id = a.workflow_id
+      WHERE a.workflow_id = ${workflowId}
+        AND w.user_id = ${userId}
+      ORDER BY a.created_at ASC
     ` as WorkflowArtifactRow[];
     return rows.map((row) => this.fromRow(row));
   }

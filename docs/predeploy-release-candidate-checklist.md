@@ -15,6 +15,8 @@ Green:
 - Gmail active-connection warmup and read-only `fetch_emails` execution.
 - Real DOCX generation, Flutter artifact envelope, download, and persistence
   after backend recreation.
+- Workflow/artifact HTTP routes enforce owner-scoped access before returning
+  workflow metadata, artifact lists, or document downloads.
 - Backend health, bootstrap status, metrics, and backend-to-Nango health.
 
 No-go until completed:
@@ -27,9 +29,6 @@ No-go until completed:
   current tree, but Git history still requires an explicit purge decision.
 - Resolve or formally risk-accept the two critical production dependency
   advisories reported by `npm audit --omit=dev`.
-- Confirm and enforce the production workflow/artifact authorization policy.
-  The current smoke validates the Flutter transport shape and download
-  contract, not user-level access control.
 - Supply and validate the production Nango webhook secret.
 - Run the strict preflight against real Hetzner paths and production URLs.
 - Apply/verify production migrations, TLS, backup, and rollback.
@@ -74,8 +73,12 @@ NANGO_BASE_URL=http://host.docker.internal:3003 \
 NANGO_PUBLIC_BASE_URL=http://localhost:3003 \
 PUBLIC_API_BASE_URL=http://localhost:8080 \
 CORS_ORIGINS=http://localhost:54059 \
+ASO_ALLOW_TEST_AUTH_HEADER=1 \
 docker compose up -d --build redis jaeger backend
 ```
+
+`ASO_ALLOW_TEST_AUTH_HEADER=1` only enables the local
+`x-aso-test-user-id` smoke-test header. Do not set it in production.
 
 Start monitoring services only after the minimum stack passes:
 
@@ -97,7 +100,9 @@ npm audit --omit=dev --audit-level=critical
 npx jest \
   tests/unit/hetzner-preflight.test.ts \
   tests/unit/workflow-spec-factory.test.ts \
+  tests/unit/workflow-artifact-auth-routes.test.ts \
   tests/unit/workflow-artifact-route-shape.test.ts \
+  tests/unit/document-artifact-presenter.test.ts \
   tests/unit/desktop-method.service.test.ts \
   tests/unit/artifact-renderer.test.ts \
   --runInBand
@@ -113,6 +118,8 @@ Required results:
   `fileUrl`, `generationMode`, and optional preview fields.
 - Server-only `renderedPath` and `filePath` are not exposed in the nested
   Flutter document artifact.
+- Workflow and artifact HTTP routes require authentication and only return a
+  user's own workflow metadata, artifact lists, and document downloads.
 - Production dependencies have no untriaged critical advisories.
 
 ### Production dependency security triage
@@ -219,6 +226,8 @@ NANGO_RUNTIME_DIST_DIR or NANGO_INTEGRATIONS_DIST_DIR when no explicit CLI path 
 In strict mode, `PUBLIC_API_BASE_URL` and `NANGO_PUBLIC_BASE_URL` must be
 non-loopback HTTPS URLs. Every `CORS_ORIGINS` entry must also be a non-loopback
 HTTPS origin with no path, query, fragment, or wildcard.
+`ASO_ALLOW_TEST_AUTH_HEADER=1` is local-only; strict production preflight
+rejects it so document routes require Firebase bearer authentication.
 
 ## 4. Linux ONNX classifier gate
 
@@ -312,6 +321,7 @@ docker run --rm \
   -e API_BASE_URL=http://backend:8080 \
   -e PUBLIC_API_BASE_URL=http://backend:8080 \
   -e WORKFLOW_SMOKE_RUNTIME=dist \
+  -e WORKFLOW_SMOKE_USER_ID=workflow-docx-smoke \
   -v "$PWD/.data/artifacts:/app/.data/artifacts" \
   -v "$PWD/tests/e2e/workflow-artifact-docx-smoke.js:/tmp/workflow-artifact-docx-smoke.js:ro" \
   aso-backend node /tmp/workflow-artifact-docx-smoke.js
@@ -327,8 +337,8 @@ Required results:
   with the expected filename.
 - Recreating the backend preserves the generated DOCX and the same download URL
   continues returning it.
-- The production authorization layer prevents one user from listing or
-  downloading another user's workflow artifacts.
+- The authorization layer prevents one user from listing or downloading
+  another user's workflow artifacts.
 
 ## 7. Backend API and operational gate
 
@@ -455,7 +465,6 @@ Go only when:
 - Workflow lane passes.
 - DOCX route/download smoke passes.
 - Flutter UI document workflow passes.
-- Workflow/artifact authorization is enforced for production users.
 - Hetzner mounts, env, TLS, migrations, backup, and rollback are verified.
 
 Any failed required item is a no-go until resolved or explicitly removed from

@@ -8,10 +8,19 @@ import { artifactGeneratorService } from '../services/artifact-generator.service
 import { codeInterpreterService } from '../services/code-interpreter.service';
 import { sessionService } from '../services/session.service';
 import { ArtifactStore } from '../services/workflow/ArtifactStore';
+import {
+    AuthenticatedRequest,
+    createRouteAuthMiddleware,
+    RouteAuthOptions,
+} from './auth';
 
-export function createArtifactsRouter(sql: NeonQueryFunction<false, false>) {
+export function createArtifactsRouter(
+    sql: NeonQueryFunction<false, false>,
+    authOptions: RouteAuthOptions = {},
+) {
     const router = express.Router();
     const artifactStore = new ArtifactStore(sql);
+    const requireAuth = createRouteAuthMiddleware(authOptions);
 
     router.post('/generate/code', async (req: Request, res: Response) => {
     try {
@@ -141,9 +150,9 @@ export function createArtifactsRouter(sql: NeonQueryFunction<false, false>) {
     }
     });
 
-    router.get('/:artifactId/download', async (req: Request, res: Response) => {
+    router.get('/:artifactId/download', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-        const artifact = await artifactStore.getArtifactById(req.params.artifactId);
+        const artifact = await artifactStore.getArtifactByIdForUser(req.params.artifactId, req.userId!);
         if (!artifact) {
             res.status(404).json({ error: 'Artifact not found' });
             return;

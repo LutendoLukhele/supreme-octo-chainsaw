@@ -289,6 +289,10 @@ function checkEnv(failures) {
   requireAnyEnv(failures, ['REDIS_URL', 'REDIS_PASSWORD']);
   checkCorsOrigins(failures);
 
+  if (!options.allowLocalDefaults && process.env.ASO_ALLOW_TEST_AUTH_HEADER === '1') {
+    addFailure(failures, 'ASO_ALLOW_TEST_AUTH_HEADER must be disabled in strict production mode');
+  }
+
   const hasIntentModelDir = Boolean(process.env.ML_INTENT_MODEL_DIR?.trim());
   const hasNerModelDir = Boolean(process.env.ML_NER_MODEL_DIR?.trim());
   if (hasIntentModelDir !== hasNerModelDir) {
